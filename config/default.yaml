@@ -1,0 +1,33 @@
+# Kamera/Stream ayarları
+capture:
+  source_type: "youtube" # youtube, rtsp, file
+  source_url: "" # youtube url veya rtsp adresi
+  frame_interval: 2.0 # kaç saniyede bir kare al
+  resolution: [1280, 720]
+# Model ayarları
+model:
+  input_size: 64 # cnn girdi boyut (64x64)
+  checkpoint_path: "data/models/best.pth"
+  onnx_path: "data/exports/model.onnx"
+  confidence_threshold: 0.7 # bu altındaki tahminler "belirsiz"
+# Eğitim ayarları
+training:
+  batch_size: 32
+  learning_rate: 0.001
+  epochs: 50
+  early_stopping_patience: 7
+  train_split: 0.8
+  data_dir: "data/labeled"
+# Çıkarım ayarları
+inference:
+  batch_size: 16
+  device: "cpu" #cpu veya cuda
+# API ayarları
+api:
+  host: "0.0.0.0"
+  port: 8000
+  cors_origins: ["*"]
+# Loglama
+logging:
+  level: "INFO"
+  format: "json" #json veya text
