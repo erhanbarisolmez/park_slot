@@ -14,7 +14,8 @@ import numpy as np
 import torch
 
 from park_slot.annotation.schema import CameraSlotConfig, SlotDefinition
-from park_slot.utils.image import crop_polygon, resize, normalize
+from park_slot.inference.overlay import MINIMAP_HEIGHT, MINIMAP_WIDTH, project_to_minimap
+from park_slot.utils.image import crop_polygon_warped, equalize_lighting, normalize
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +26,33 @@ class SlotManager:
     def __init__(self, config_path: str | Path, input_size: int = 64):
         self._input_size = input_size
         self._config = self._load_config(config_path)
+        self._minimap_coords = self._compute_minimap_coords()
         logger.info(
             "SlotManager: %s, %d slot yüklendi",
             self._config.camera_id,
             len(self._config.slots),
         )
+
+    def _compute_minimap_coords(self) -> dict[int, tuple[float, float]]:
+        """perspective_transform varsa, her slot için normalize (0-1) kuşbakışı
+        koordinat hesapla - API/WebSocket üzerinden canlı video veremeyen
+        istemcilere (örn. mobil uygulama) sunmak için. Yoksa boş sözlük döner."""
+        pt = self._config.perspective_transform
+        if not pt:
+            return {}
+
+        matrix = np.array(pt, dtype=np.float64)
+        coords = {}
+        for slot in self._config.slots:
+            x, y = project_to_minimap(slot.polygon, matrix)
+            nx = float(np.clip(x / MINIMAP_WIDTH, 0.0, 1.0))
+            ny = float(np.clip(y / MINIMAP_HEIGHT, 0.0, 1.0))
+            coords[slot.id] = (nx, ny)
+        return coords
+
+    @property
+    def minimap_coords(self) -> dict[int, tuple[float, float]]:
+        return self._minimap_coords
 
     @staticmethod
     def _load_config(path: str | Path) -> CameraSlotConfig:
@@ -64,12 +87,12 @@ class SlotManager:
             [(slot_def, tensor), ...] her slot için tanım ve tensor çifti
         """
         results = []
+        frame = equalize_lighting(frame)
 
         for slot in self._config.slots:
             try:
-                cropped = crop_polygon(frame, slot.polygon)
-                resized = resize(cropped, self._input_size)
-                tensor = normalize(resized)
+                cropped = crop_polygon_warped(frame, slot.polygon, self._input_size)
+                tensor = normalize(cropped)
                 results.append((slot, tensor))
             except Exception as e:
                 logger.warning("Slot %s kırpılamadı: %s", slot.label, e)

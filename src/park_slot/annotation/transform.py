@@ -75,4 +75,4 @@ def warp_points(
     """
     pts = np.array(points, dtype=np.float32).reshape(-1, 1, 2)
     warped = cv2.perspectiveTransform(pts, matrix)
-    return warped.reshape(-1, 2).astype(int).tolist()
+    return np.round(warped.reshape(-1, 2)).astype(int).tolist()

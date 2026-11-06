@@ -49,6 +49,11 @@ class Pipeline:
         self._show_window = show_window
         self._running = False
         self._thread: threading.Thread | None = None
+        self._display_lock = threading.Lock()
+        self._latest_display = None
+
+        # Varsa kuşbakışı mini-harita için homografi matrisi (bkz. tools/mark_perspective.py)
+        self._perspective_transform = slot_manager.config.perspective_transform
 
         # Slot polygon'larını sözlüğe çevir (overlay için)
         self._polygons = {
@@ -82,6 +87,11 @@ class Pipeline:
     @property
     def is_running(self) -> bool:
         return self._running
+
+    def get_display_frame(self):
+        """Son render edilen kareyi döndür (ana thread'den cv2.imshow için)."""
+        with self._display_lock:
+            return self._latest_display
 
     def _loop(self) -> None:
         """Ana döngü - thread'de çalışır."""
@@ -126,12 +136,16 @@ class Pipeline:
 
         self._state_store.update_batch(updates)
 
-        # 5. Görselleştir (opsiyonel)
+        # 5. Görselleştir (opsiyonel) - imshow/waitKey Qt GUI thread güvenliği
+        # gerektirdiği için burada çağrılmaz; kare saklanır, ana thread gösterir.
         if self._show_window:
             parking_status = self._state_store.get_status()
-            display = draw_overlay(frame, parking_status, self._polygons)
-            cv2.imshow("ParkSlot Live", display)
-            cv2.waitKey(1)
+            display = draw_overlay(
+                frame, parking_status, self._polygons,
+                perspective_transform=self._perspective_transform,
+            )
+            with self._display_lock:
+                self._latest_display = display
 
         logger.debug(
             "Frame işlendi: %d slot, infer=%.1fms",

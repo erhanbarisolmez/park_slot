@@ -41,3 +41,24 @@ class WebSocketMessage(BaseModel):
     """WebSocket üzerinden gönderilen mesaj."""
     event: str  # "update", "full_status"
     data: dict
+
+
+class SlotQualityMetrics(BaseModel):
+    """Tek bir slot için proxy kalite metrikleri."""
+    flip_rate_per_hour: float
+    unknown_rate: float
+    avg_confidence: float
+
+
+class QualityResponse(BaseModel):
+    """GET /api/v1/quality yanıtı.
+
+    Not: Ground-truth olmadan gerçek doğruluk ölçülemez - bunlar accuracy
+    DEĞİL, operasyonel anormallik/drift sinyalleridir.
+    """
+    window_seconds: float
+    state_change_count: int
+    flip_rate_per_hour: float
+    unknown_rate: float
+    avg_confidence: float
+    per_slot: dict[int, SlotQualityMetrics] = {}

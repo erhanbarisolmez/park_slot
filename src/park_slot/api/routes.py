@@ -5,12 +5,14 @@ Endpoint'ler:
 - GET /api/v1/status   → Otopark doluluk özeti
 - GET /api/v1/slots    → Tüm slotların detaylı durumu
 - GET /api/v1/slots/{id} → Tek bir slot'un durumu
+- GET /api/v1/quality  → Proxy kalite/drift sinyalleri (flip rate, unknown rate, güven)
 """
 
 from fastapi import APIRouter, HTTPException
 
-from park_slot.api.models import HealthResponse, StatusResponse, SlotsResponse
+from park_slot.api.models import HealthResponse, StatusResponse, SlotsResponse, QualityResponse
 from park_slot.services.monitor import Monitor
+from park_slot.services.prediction_log import PredictionLog
 from park_slot.services.state_store import StateStore
 
 router = APIRouter()
@@ -18,14 +20,16 @@ router = APIRouter()
 # Bu değişkenler app.py'de set edilir
 _state_store: StateStore | None = None
 _monitor: Monitor | None = None
+_prediction_log: PredictionLog | None = None
 _pipeline_running: bool = False
 
 
-def init_routes(state_store: StateStore, monitor: Monitor) -> None:
+def init_routes(state_store: StateStore, monitor: Monitor, prediction_log: PredictionLog | None = None) -> None:
     """Route'ların kullanacağı servisleri ayarla."""
-    global _state_store, _monitor
+    global _state_store, _monitor, _prediction_log
     _state_store = state_store
     _monitor = monitor
+    _prediction_log = prediction_log
 
 
 def set_pipeline_status(running: bool) -> None:
@@ -91,3 +95,12 @@ def get_slot(slot_id: int):
         raise HTTPException(status_code=404, detail=f"Slot {slot_id} bulunamadı")
 
     return slot.model_dump()
+
+
+@router.get("/api/v1/quality", response_model=QualityResponse)
+def get_quality(window_seconds: float = 3600.0):
+    """Proxy kalite/drift sinyalleri (ground-truth yok - accuracy değildir)."""
+    if _prediction_log is None:
+        raise HTTPException(status_code=503, detail="Tahmin günlüğü etkin değil")
+
+    return QualityResponse(**_prediction_log.get_quality_metrics(window_seconds))

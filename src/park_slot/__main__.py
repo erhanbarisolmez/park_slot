@@ -17,8 +17,10 @@ Bu dosya tüm parçaları bir araya getirir:
 import argparse
 import logging
 import logging.config
+import threading
 from pathlib import Path
 
+import cv2
 import yaml
 import uvicorn
 
@@ -29,6 +31,7 @@ from park_slot.capture.rtsp import RTSPSource
 from park_slot.inference.engine import InferenceEngine
 from park_slot.inference.pipeline import Pipeline
 from park_slot.services.monitor import Monitor
+from park_slot.services.prediction_log import PredictionLog
 from park_slot.services.slot_manager import SlotManager
 from park_slot.services.state_store import StateStore
 from park_slot.settings import load_settings
@@ -95,8 +98,13 @@ def main():
     )
 
     # Servisler
-    state_store = StateStore(camera_id=slot_manager.camera_id)
+    state_store = StateStore(
+        camera_id=slot_manager.camera_id,
+        minimap_coords=slot_manager.minimap_coords,
+    )
     monitor = Monitor()
+    prediction_log = PredictionLog(log_path="data/logs/predictions.jsonl")
+    state_store.on_change(prediction_log.record)
 
     # Pipeline
     pipeline = Pipeline(
@@ -121,17 +129,49 @@ def main():
     app = create_app(
         state_store=state_store,
         monitor=monitor,
+        prediction_log=prediction_log,
         cors_origins=settings.api.cors_origins,
     )
 
     # Uvicorn ile API sunucusunu çalıştır
     logger.info("API başlatılıyor: %s:%d", settings.api.host, settings.api.port)
-    uvicorn.run(
-        app,
-        host=settings.api.host,
-        port=settings.api.port,
-        log_level="info",
-    )
+
+    if args.show_window:
+        # cv2 GUI çağrıları Qt backend'inde ana thread'den yapılmak zorunda,
+        # bu yüzden API'yi arka plana alıp pencere döngüsünü burada çalıştırıyoruz.
+        config = uvicorn.Config(
+            app, host=settings.api.host, port=settings.api.port, log_level="info"
+        )
+        server = uvicorn.Server(config)
+        api_thread = threading.Thread(target=server.run, daemon=True)
+        api_thread.start()
+
+        # Birden fazla kamera aynı anda izlenebilsin diye pencere başlığına
+        # kamera id'si eklenir (yoksa tüm pencereler aynı isimde olur).
+        window_title = f"ParkSlot Live - {slot_manager.camera_id}"
+
+        logger.info("Görsel pencere açıldı (çıkmak için pencerede 'q' veya Ctrl+C)")
+        try:
+            while not shutdown.requested:
+                frame = pipeline.get_display_frame()
+                if frame is not None:
+                    cv2.imshow(window_title, frame)
+                key = cv2.waitKey(30) & 0xFF
+                if key in (ord("q"), 27):
+                    break
+        finally:
+            cv2.destroyAllWindows()
+            server.should_exit = True
+            if not shutdown.requested:
+                pipeline.stop()
+            api_thread.join(timeout=5)
+    else:
+        uvicorn.run(
+            app,
+            host=settings.api.host,
+            port=settings.api.port,
+            log_level="info",
+        )
 
 
 if __name__ == "__main__":

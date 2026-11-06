@@ -8,8 +8,8 @@ Kontroller:
 - Sağ tık: Son noktayı geri al
 - Enter: Mevcut polygon'u kaydet, yeni slot'a geç
 - 'u': Son slot'u geri al (undo)
-- 's': Tüm slotları JSON olarak kaydet
-- 'q' veya ESC: Çık
+- 's': Tüm slotları JSON olarak kaydet ve pencereyi kapat
+- 'q' veya ESC: Kaydetmeden çık
 """
 
 import json
@@ -20,6 +20,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
+from park_slot.annotation.geometry import order_points_by_angle
 from park_slot.annotation.schema import CameraSlotConfig, SlotDefinition
 
 logger = logging.getLogger(__name__)
@@ -34,12 +35,27 @@ COLOR_TEXT = (255, 255, 255)     # Beyaz - etiketler
 class SlotAnnotator:
     """Park slotlarını fare ile işaretleme aracı."""
 
-    def __init__(self, image: np.ndarray, camera_id: str = "cam1"):
+    def __init__(
+        self,
+        image: np.ndarray,
+        camera_id: str = "cam1",
+        source_url: str = "",
+        initial_slots: Optional[list[SlotDefinition]] = None,
+    ):
+        """
+        Args:
+            initial_slots: Önceden yüklenmiş slotlar (örn. tools/annotate_birdseye.py'nin
+                mevcut slotları kuşbakışı uzaya projekte edip buraya aktarması için) -
+                verilirse kaydedilmiş slot olarak gösterilir, id numaralandırması
+                en büyük mevcut id'den devam eder. Verilmezse (None, varsayılan)
+                eski davranış birebir korunur (boş liste, id 1'den başlar).
+        """
         self._image = image.copy()
         self._camera_id = camera_id
+        self._source_url = source_url
         self._current_points: list[list[int]] = []
-        self._slots: list[SlotDefinition] = []
-        self._next_id = 1
+        self._slots: list[SlotDefinition] = list(initial_slots) if initial_slots else []
+        self._next_id = max((s.id for s in self._slots), default=0) + 1
         self._window_name = "Park Slot Annotator"
 
     def _mouse_callback(self, event: int, x: int, y: int, flags: int, param) -> None:
@@ -80,7 +96,7 @@ class SlotAnnotator:
         # Bilgi çubuğu
         info = f"Slot #{self._next_id} | Noktalar: {len(self._current_points)} | Toplam: {len(self._slots)}"
         cv2.putText(canvas, info, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_TEXT, 2)
-        cv2.putText(canvas, "Sol:Ekle | Sag:Geri | Enter:Kaydet | S:Dosyala | Q:Cik",
+        cv2.putText(canvas, "Sol:Ekle | Sag:Geri | Enter:Kaydet | S:Dosyala ve Cik | Q:Kaydetmeden Cik",
                     (10, canvas.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_TEXT, 1)
 
         return canvas
@@ -91,10 +107,14 @@ class SlotAnnotator:
             logger.warning("En az 3 nokta gerekli (mevcut: %d)", len(self._current_points))
             return
 
+        # Tıklama sırası karışık olsa da basit/convex bir polygon elde etmek için
+        # köşeleri centroid etrafındaki açıya göre yeniden sırala (bkz. slot 3 bug'ı)
+        ordered_points = order_points_by_angle(self._current_points)
+
         slot = SlotDefinition(
             id=self._next_id,
             label=f"S{self._next_id}",
-            polygon=self._current_points.copy(),
+            polygon=ordered_points,
         )
         self._slots.append(slot)
         logger.info("Slot kaydedildi: %s (%d nokta)", slot.label, len(slot.polygon))
@@ -111,15 +131,30 @@ class SlotAnnotator:
 
     def save_to_file(self, path: str | Path) -> None:
         """Slotları JSON dosyasına kaydet."""
+        path = Path(path)
+
+        # Dosyada zaten perspective_transform varsa (tools/mark_perspective.py
+        # ile ayarlanmış kuşbakışı referans noktaları) koru - slotları yeniden
+        # çizmek bu kalibrasyonu silmemeli, aksi halde minimap ve toplu
+        # engellenme tespitinin fiziksel yakınlık filtresi bozulur.
+        existing_perspective_transform = None
+        if path.exists():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    existing_perspective_transform = json.load(f).get("perspective_transform")
+            except (json.JSONDecodeError, OSError):
+                pass
+
         h, w = self._image.shape[:2]
         config = CameraSlotConfig(
             camera_id=self._camera_id,
+            source_url=self._source_url,
             image_width=w,
             image_height=h,
             slots=self._slots,
+            perspective_transform=existing_perspective_transform,
         )
 
-        path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(config.model_dump_json(indent=2))
@@ -148,6 +183,7 @@ class SlotAnnotator:
             elif key == ord("s"):
                 path = save_path or f"config/slots/{self._camera_id}.json"
                 self.save_to_file(path)
+                break
 
             elif key == ord("q") or key == 27:  # Q veya ESC
                 break

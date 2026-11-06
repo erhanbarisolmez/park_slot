@@ -13,6 +13,8 @@ Uygulanan augmentation'lar:
 """
 
 import logging
+import random
+import re
 from pathlib import Path
 
 import cv2
@@ -27,6 +29,61 @@ logger = logging.getLogger(__name__)
 # Sınıf etiketleri
 CLASS_MAP = {"empty": 0, "occupied": 1}
 CLASS_NAMES = {v: k for k, v in CLASS_MAP.items()}
+
+# collector.py'nin ürettiği dosya adı formatı: slot{id}_{timestamp_ms}.jpg
+_FILENAME_RE = re.compile(r"slot(\d+)_(\d+)")
+
+
+def parse_slot_and_time(path: Path) -> tuple[int, int]:
+    """Dosya adından (slot_id, timestamp_ms) çıkar.
+
+    Eşleşmezse her dosya kendi tekil grubu olur (dosya yolunun hash'i),
+    böylece grup bazlı split'te sessizce yanlış gruplanmaz.
+    """
+    match = _FILENAME_RE.search(path.stem)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+
+    logger.warning("Dosya adından slot/zaman çıkarılamadı, tekil grup atanıyor: %s", path)
+    return -1, hash(str(path))
+
+
+def group_split(
+    samples: list[tuple[Path, int]],
+    train_ratio: float = 0.8,
+    seed: int = 42,
+    bucket_minutes: int = 30,
+) -> tuple[list[int], list[int]]:
+    """Aynı slot + aynı zaman penceresindeki örnekleri bölmeden train/val ayır.
+
+    Neden gerekli: flat random_split, aynı slotun birbirine yakın zamanlı
+    (örn. aynı toplama oturumundaki) kareleri hem train hem val'e dağıtabilir
+    - bu, val accuracy'yi yanıltan bir data leakage'dır. Bunun yerine
+    (slot_id, zaman-bucket) grupları bütün halinde bir tarafa atanır.
+
+    Returns:
+        (train_indices, val_indices) - samples listesine göre indeksler
+    """
+    bucket_ms = bucket_minutes * 60 * 1000
+    groups: dict[tuple[int, int], list[int]] = {}
+    for idx, (path, _label) in enumerate(samples):
+        slot_id, timestamp_ms = parse_slot_and_time(path)
+        key = (slot_id, timestamp_ms // bucket_ms if slot_id != -1 else timestamp_ms)
+        groups.setdefault(key, []).append(idx)
+
+    group_keys = list(groups.keys())
+    random.Random(seed).shuffle(group_keys)
+
+    target_train = int(len(samples) * train_ratio)
+    train_indices: list[int] = []
+    val_indices: list[int] = []
+    for key in group_keys:
+        if len(train_indices) < target_train:
+            train_indices.extend(groups[key])
+        else:
+            val_indices.extend(groups[key])
+
+    return train_indices, val_indices
 
 
 class ParkSlotDataset(Dataset):
@@ -103,6 +160,10 @@ class ParkSlotDataset(Dataset):
             image = cv2.GaussianBlur(image, (ksize, ksize), 0)
 
         return image
+
+    @property
+    def samples(self) -> list[tuple[Path, int]]:
+        return self._samples
 
     def __len__(self) -> int:
         return len(self._samples)

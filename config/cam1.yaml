@@ -1,0 +1,33 @@
+# cam1 için canlı izleme konfigürasyonu
+capture:
+  source_type: "youtube"
+  source_url: "https://www.youtube.com/watch?v=UoqI-CdDGIs"
+  frame_interval: 0.2
+  resolution: [1280, 720]
+# Model ayarları
+model:
+  input_size: 64
+  checkpoint_path: "data/models_cam1/best.pth"
+  onnx_path: "data/exports/cam1_model.onnx"
+  confidence_threshold: 0.7
+# Eğitim ayarları (bu config'te kullanılmıyor, referans)
+training:
+  batch_size: 32
+  learning_rate: 0.001
+  epochs: 50
+  early_stopping_patience: 7
+  train_split: 0.8
+  data_dir: "data/labeled_cam1"
+# Çıkarım ayarları
+inference:
+  batch_size: 16
+  device: "cpu"
+# API ayarları
+api:
+  host: "0.0.0.0"
+  port: 8000
+  cors_origins: ["*"]
+# Loglama
+logging:
+  level: "INFO"
+  format: "json"

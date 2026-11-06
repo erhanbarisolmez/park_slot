@@ -9,11 +9,15 @@ build/
 # Virtual environment
 venv/
 
-# Data (büyük dosyalar)
+# Data (büyük dosyalar) - eğitim görüntüleri ve çalışma zamanı verisi hariç;
+# modeller (data/models_cam*/*.pth) BİLEREK dahil ediliyor
 data/labeled/
+data/labeled_*/
 data/models/
 data/exports/
 data/sample_frame.jpg
+data/verify_snapshots/
+data/logs/
 
 # Logs
 logs/

@@ -8,11 +8,14 @@ Kontroller:
     Sağ tık: Son noktayı geri al
     Enter: Slot'u kaydet, sonrakine geç
     U: Son slot'u geri al
-    S: JSON olarak kaydet
-    Q / ESC: Çık
+    S: JSON olarak kaydet ve kapat
+    Q / ESC: Kaydetmeden çık
 """
 
 import argparse
+import json
+from pathlib import Path
+
 import cv2
 from park_slot.annotation.gui import SlotAnnotator
 
@@ -30,10 +33,15 @@ def main():
 
     print(f"Görüntü: {args.image} ({image.shape[1]}x{image.shape[0]})")
     print("Slotları fare ile işaretleyin.")
-    print("Sol tık=nokta ekle | Enter=kaydet | S=dosyala | Q=çık")
+    print("Sol tık=nokta ekle | Enter=kaydet | S=dosyala ve kapat | Q=kaydetmeden çık")
 
     save_path = f"config/slots/{args.camera}.json"
-    annotator = SlotAnnotator(image, camera_id=args.camera)
+    existing_source_url = ""
+    if Path(save_path).exists():
+        with open(save_path, "r", encoding="utf-8") as f:
+            existing_source_url = json.load(f).get("source_url", "")
+
+    annotator = SlotAnnotator(image, camera_id=args.camera, source_url=existing_source_url)
     slots = annotator.run(save_path=save_path)
 
     print(f"\nToplam {len(slots)} slot işaretlendi.")

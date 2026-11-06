@@ -4,6 +4,8 @@ Boş slotlar yeşil, dolu slotlar kırmızı, belirsiz slotlar sarı.
 Yarı saydam polygon + etiket gösterir.
 """
 
+from typing import Optional
+
 import cv2
 import numpy as np
 
@@ -16,12 +18,20 @@ COLORS = {
     SlotStatus.UNKNOWN: (0, 200, 200),    # Sarı
 }
 
+# Kuşbakışı mini-harita tuval boyutu. tools/mark_perspective.py bu değerleri
+# import edip homografinin hedef dikdörtgenini bununla hesaplıyor - ikisi
+# birbirinden bağımsız değişirse mini-harita yanlış ölçeklenir.
+MINIMAP_WIDTH = 280
+MINIMAP_HEIGHT = 180
+MINIMAP_MARGIN = 10
+
 
 def draw_overlay(
     frame: np.ndarray,
     status: ParkingStatus,
     slot_polygons: dict[int, list[list[int]]],
     alpha: float = 0.35,
+    perspective_transform: Optional[list[list[float]]] = None,
 ) -> np.ndarray:
     """Slot durumlarını kare üzerine çiz.
 
@@ -30,6 +40,9 @@ def draw_overlay(
         status: Tüm slotların durumu
         slot_polygons: {slot_id: [[x,y], ...]} polygon koordinatları
         alpha: Overlay saydamlığı (0=saydam, 1=opak)
+        perspective_transform: Varsa, zemin düzlemine kuşbakışı homografi
+            matrisi (tools/mark_perspective.py ile üretilir) - sağ alt köşeye
+            küçük bir kuşbakışı mini-harite eklenir.
 
     Returns:
         Overlay çizilmiş görüntü
@@ -60,7 +73,74 @@ def draw_overlay(
     # Bilgi paneli
     _draw_info_panel(output, status)
 
+    if perspective_transform is not None:
+        minimap = _draw_minimap(status, slot_polygons, perspective_transform)
+        _composite_minimap(output, minimap)
+
     return output
+
+
+def project_to_minimap(polygon: list[list[int]], matrix: np.ndarray) -> tuple[float, float]:
+    """Bir slot polygon'unun merkezini kuşbakışı mini-harita piksel uzayına projekte et.
+
+    SlotManager (API için normalize 0-1 koordinat hesaplarken) ve bu
+    modüldeki _draw_minimap (render için) tarafından paylaşılan tek
+    projeksiyon mantığı - ikisinin birbirinden sapmaması için.
+
+    Returns:
+        (x, y) MINIMAP_WIDTH/MINIMAP_HEIGHT piksel uzayında, kenetlenmemiş ham değer.
+    """
+    pts = np.array(polygon, dtype=np.float64)
+    cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
+
+    src = np.array([[[cx, cy]]], dtype=np.float64)
+    dst = cv2.perspectiveTransform(src, matrix)
+    x, y = dst[0, 0]
+    return float(x), float(y)
+
+
+def _draw_minimap(
+    status: ParkingStatus,
+    slot_polygons: dict[int, list[list[int]]],
+    perspective_transform: list[list[float]],
+) -> np.ndarray:
+    """Slot merkezlerini zemin düzlemine (kuşbakışı) projekte edip küçük bir harita çiz."""
+    canvas = np.full((MINIMAP_HEIGHT, MINIMAP_WIDTH, 3), 40, dtype=np.uint8)
+    matrix = np.array(perspective_transform, dtype=np.float64)
+
+    for slot_state in status.slots:
+        polygon = slot_polygons.get(slot_state.id)
+        if polygon is None:
+            continue
+
+        x, y = project_to_minimap(polygon, matrix)
+
+        # Homografi dışındaki (ölçülen alanın dışına düşen) slotlar tuval
+        # sınırına kenetlenir - tamamen gizlenmez, kenarda görünür kalır.
+        x = int(np.clip(x, 2, MINIMAP_WIDTH - 3))
+        y = int(np.clip(y, 2, MINIMAP_HEIGHT - 3))
+
+        color = COLORS.get(slot_state.status, COLORS[SlotStatus.UNKNOWN])
+        cv2.circle(canvas, (x, y), 6, color, -1)
+        cv2.circle(canvas, (x, y), 6, (220, 220, 220), 1)
+
+    cv2.rectangle(canvas, (0, 0), (MINIMAP_WIDTH - 1, MINIMAP_HEIGHT - 1), (200, 200, 200), 1)
+    cv2.putText(canvas, "Kusbakisi", (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+
+    return canvas
+
+
+def _composite_minimap(frame: np.ndarray, minimap: np.ndarray) -> None:
+    """Mini-haritayı ana karenin sağ alt köşesine yerleştir (yerinde değiştirir)."""
+    h, w = frame.shape[:2]
+    mh, mw = minimap.shape[:2]
+
+    x0 = w - mw - MINIMAP_MARGIN
+    y0 = h - mh - MINIMAP_MARGIN
+    if x0 < 0 or y0 < 0:
+        return
+
+    frame[y0:y0 + mh, x0:x0 + mw] = minimap
 
 
 def _draw_label(
@@ -88,7 +168,7 @@ def _draw_info_panel(frame: np.ndarray, status: ParkingStatus) -> None:
     h, w = frame.shape[:2]
 
     # Panel arka planı
-    cv2.rectangle(frame, (0, 0), (250, 80), (0, 0, 0), -1)
+    cv2.rectangle(frame, (0, 0), (250, 100), (0, 0, 0), -1)
 
     # Metin
     cv2.putText(frame, f"Toplam: {status.total_slots}", (10, 20),
@@ -97,6 +177,8 @@ def _draw_info_panel(frame: np.ndarray, status: ParkingStatus) -> None:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS[SlotStatus.EMPTY], 1)
     cv2.putText(frame, f"Dolu: {status.occupied}", (10, 60),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS[SlotStatus.OCCUPIED], 1)
+    cv2.putText(frame, f"Bilinmiyor: {status.unknown}", (10, 80),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS[SlotStatus.UNKNOWN], 1)
 
     # Doluluk oranı
     if status.total_slots > 0:

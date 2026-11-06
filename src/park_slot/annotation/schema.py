@@ -25,11 +25,24 @@ class SlotDefinition(BaseModel):
 
 
 class SlotState(BaseModel):
-    """Bir slotun anlık durumu."""
+    """Bir slotun anlık durumu.
+
+    status: hysteresis'ten geçmiş, dışa raporlanan "onaylı" durum.
+    raw_status: modelin o kareye ait ham tahmini (hysteresis uygulanmamış).
+    stable_since: onaylı durumun en son değiştiği unix zamanı.
+    minimap_x/minimap_y: varsa (perspective_transform ayarlıysa), slotun
+        kuşbakışı düzlemdeki normalize (0-1) konumu - canlı video
+        veremeyen istemciler (örn. mobil uygulama) bunu kendi basit harita
+        UI'ında kullanabilir. perspective_transform yoksa None.
+    """
     id: int
     label: str = ""
     status: SlotStatus = SlotStatus.UNKNOWN
     confidence: float = 0.0
+    raw_status: SlotStatus = SlotStatus.UNKNOWN
+    stable_since: float = 0.0
+    minimap_x: Optional[float] = None
+    minimap_y: Optional[float] = None
 
 
 class CameraSlotConfig(BaseModel):

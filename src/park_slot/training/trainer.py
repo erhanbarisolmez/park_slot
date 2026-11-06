@@ -19,10 +19,10 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset
 
 from park_slot.model.cnn import ParkSlotCNN
-from park_slot.training.dataset import ParkSlotDataset
+from park_slot.training.dataset import ParkSlotDataset, group_split
 from park_slot.training.metrics import MetricsTracker
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ class Trainer:
         epochs: int = 50,
         patience: int = 7,
         train_split: float = 0.8,
+        split_seed: int = 42,
         device: str = "cpu",
     ):
         self._device = torch.device(device)
@@ -53,13 +54,14 @@ class Trainer:
         full_dataset = ParkSlotDataset(data_dir, input_size=input_size, augment=True)
         val_dataset = ParkSlotDataset(data_dir, input_size=input_size, augment=False)
 
-        # Train/validation bölme
-        total = len(full_dataset)
-        train_size = int(total * train_split)
-        val_size = total - train_size
+        # Train/validation bölme: aynı slot + aynı zaman penceresindeki
+        # örnekler bir arada tutulur (bkz. dataset.group_split - sızıntı önleme)
+        train_indices, val_indices = group_split(
+            full_dataset.samples, train_ratio=train_split, seed=split_seed,
+        )
 
-        train_subset, _ = random_split(full_dataset, [train_size, val_size])
-        _, val_subset = random_split(val_dataset, [train_size, val_size])
+        train_subset = Subset(full_dataset, train_indices)
+        val_subset = Subset(val_dataset, val_indices)
 
         self._train_loader = DataLoader(
             train_subset, batch_size=batch_size, shuffle=True, num_workers=0,
@@ -68,7 +70,7 @@ class Trainer:
             val_subset, batch_size=batch_size, shuffle=False, num_workers=0,
         )
 
-        logger.info("Eğitim: %d, Doğrulama: %d", train_size, val_size)
+        logger.info("Eğitim: %d, Doğrulama: %d", len(train_indices), len(val_indices))
 
         # Model
         self._model = ParkSlotCNN().to(self._device)
