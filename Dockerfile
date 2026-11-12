@@ -42,10 +42,16 @@ from torchvision.models.detection import fasterrcnn_mobilenet_v3_large_320_fpn, 
 fasterrcnn_mobilenet_v3_large_320_fpn(weights=FasterRCNN_MobileNet_V3_Large_320_FPN_Weights.DEFAULT)"
 
 COPY config/ config/
-COPY data/exports/ data/exports/
 COPY data/models_cam1/ data/models_cam1/
 COPY data/models_cam2/ data/models_cam2/
 COPY data/models_cam3/ data/models_cam3/
+COPY tools/export_onnx.py tools/export_onnx.py
+
+# data/exports/ .gitignore'da (sadece .pth checkpoint'leri takip ediliyor) -
+# ONNX'leri host'ta önceden var olmasına bağımlı kalmadan build sırasında üret
+RUN python tools/export_onnx.py --checkpoint data/models_cam1/best.pth --output data/exports/cam1_model.onnx \
+    && python tools/export_onnx.py --checkpoint data/models_cam2/best.pth --output data/exports/cam2_model.onnx \
+    && python tools/export_onnx.py --checkpoint data/models_cam3/best.pth --output data/exports/cam3_model.onnx
 
 RUN mkdir -p logs data/logs
 
