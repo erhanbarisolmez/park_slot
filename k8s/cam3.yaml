@@ -27,6 +27,12 @@ spec:
           args: ["--config", "config/cam3.yaml", "--slots", "config/slots/cam3.json"]
           ports:
             - containerPort: 8002
+          env:
+            - name: CPU_LIMIT
+              valueFrom:
+                resourceFieldRef:
+                  resource: limits.cpu
+                  divisor: "1"
           resources:
             requests:
               cpu: "250m"

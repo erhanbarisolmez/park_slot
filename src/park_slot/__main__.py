@@ -21,6 +21,7 @@ import threading
 from pathlib import Path
 
 import cv2
+import torch
 import yaml
 import uvicorn
 
@@ -36,7 +37,7 @@ from park_slot.services.mqtt_publisher import MqttPublisher
 from park_slot.services.prediction_log import PredictionLog
 from park_slot.services.slot_manager import SlotManager
 from park_slot.services.state_store import StateStore
-from park_slot.settings import load_settings
+from park_slot.settings import get_cpu_thread_limit, load_settings
 from park_slot.utils.signal import ShutdownHandler
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,15 @@ def main():
 
     # Logging
     setup_logging(Path("config/logging.yaml"))
+
+    # PyTorch/OpenCV, container'ın cgroup CPU limitini bilmeden host'un tüm
+    # çekirdeklerine göre thread açar - bu yüzden erkenden (herhangi bir
+    # model/tensor işleminden önce) container'a verilen limitle sabitleniyor
+    # (bkz. settings.get_cpu_thread_limit docstring'i).
+    cpu_threads = get_cpu_thread_limit()
+    torch.set_num_threads(cpu_threads)
+    cv2.setNumThreads(cpu_threads)
+    logger.info("CPU thread limiti: %d", cpu_threads)
 
     # Ayarlar
     settings = load_settings(Path(args.config))

@@ -1,5 +1,6 @@
 """Pydantic Settings - YAML config + environment variables."""
 
+import os
 from pathlib import Path
 from typing import List
 
@@ -102,3 +103,22 @@ def load_settings(config_path: Path | None = None) -> Settings:
         return Settings(**data)
 
     return Settings()
+
+
+def get_cpu_thread_limit() -> int:
+    """Container'ın CPU limitine göre kullanılacak thread sayısı.
+
+    PyTorch/OpenCV varsayılan olarak host'un TÜM çekirdeklerini görüp ona
+    göre thread açar, container'ın cgroup CPU limitini bilmez - bu da
+    verilen limit ne olursa olsun sürekli throttle'a sebep olur. k8s
+    manifestinde CPU_LIMIT, Downward API ile limits.cpu'dan otomatik
+    dolduruluyor (bkz. k8s/cam*.yaml); burada yoksa (lokal geliştirme)
+    host'un çekirdek sayısına düşülür.
+    """
+    env_value = os.environ.get("CPU_LIMIT")
+    if env_value:
+        try:
+            return max(1, int(env_value))
+        except ValueError:
+            pass
+    return os.cpu_count() or 1
