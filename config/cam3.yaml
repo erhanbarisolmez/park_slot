@@ -2,7 +2,7 @@
 capture:
   source_type: "youtube"
   source_url: "https://www.youtube.com/watch?v=8MXV-3JaaBY"
-  frame_interval: 0.2
+  frame_interval: 1.5
   resolution: [1280, 720]
 # model ayarları
 model:
@@ -10,6 +10,12 @@ model:
   checkpoint_path: "data/models_cam3/best.pth"
   onnx_path: "data/exports/cam3_model.onnx"
   confidence_threshold: 0.7
+# Araç tespiti (hibrit düzeltme, torchvision/BSD - bkz. inference/vehicle_detector.py)
+detector:
+  enabled: true
+  model_path: "fasterrcnn_mobilenet_v3_large_320_fpn"
+  imgsz: 416
+  conf_threshold: 0.4
 # eğitim ayarları (bu config'te kullanılmıyor referans)
 training:
   batch_size: 32
@@ -29,3 +35,10 @@ api:
 logging:
   level: "INFO"
   format: "json"
+# selfpark-backend'e MQTT yayını (camera_code backend'de önceden kayıtlı olmalı)
+mqtt:
+  enabled: false
+  broker_host: "localhost"
+  broker_port: 1883
+  camera_code: "CAM-003"
+  qos: 1

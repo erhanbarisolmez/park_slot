@@ -30,7 +30,9 @@ from park_slot.capture.youtube import YouTubeSource
 from park_slot.capture.rtsp import RTSPSource
 from park_slot.inference.engine import InferenceEngine
 from park_slot.inference.pipeline import Pipeline
+from park_slot.inference.vehicle_detector import VehicleDetector
 from park_slot.services.monitor import Monitor
+from park_slot.services.mqtt_publisher import MqttPublisher
 from park_slot.services.prediction_log import PredictionLog
 from park_slot.services.slot_manager import SlotManager
 from park_slot.services.state_store import StateStore
@@ -97,6 +99,17 @@ def main():
         confidence_threshold=settings.model.confidence_threshold,
     )
 
+    # Araç tespiti (opsiyonel, hibrit düzeltme - bkz. inference/vehicle_detector.py)
+    vehicle_detector = None
+    if settings.detector.enabled:
+        vehicle_detector = VehicleDetector(
+            model_path=settings.detector.model_path,
+            imgsz=settings.detector.imgsz,
+            conf_threshold=settings.detector.conf_threshold,
+            device=settings.inference.device,
+        )
+        logger.info("Araç tespiti etkin: %s", settings.detector.model_path)
+
     # Servisler
     state_store = StateStore(
         camera_id=slot_manager.camera_id,
@@ -105,6 +118,9 @@ def main():
     monitor = Monitor()
     prediction_log = PredictionLog(log_path="data/logs/predictions.jsonl")
     state_store.on_change(prediction_log.record)
+
+    mqtt_publisher = MqttPublisher(settings.mqtt, camera_id=slot_manager.camera_id, state_store=state_store)
+    state_store.on_change(mqtt_publisher.on_slot_change)
 
     # Pipeline
     pipeline = Pipeline(
@@ -115,6 +131,7 @@ def main():
         monitor=monitor,
         frame_interval=settings.capture.frame_interval,
         show_window=args.show_window,
+        vehicle_detector=vehicle_detector,
     )
 
     # Graceful shutdown
@@ -131,6 +148,7 @@ def main():
         monitor=monitor,
         prediction_log=prediction_log,
         cors_origins=settings.api.cors_origins,
+        pipeline=pipeline,
     )
 
     # Uvicorn ile API sunucusunu çalıştır

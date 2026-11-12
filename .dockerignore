@@ -1,0 +1,21 @@
+# Build context'e alınmayacaklar (image'a COPY edilmiyor zaten, ama context
+# gönderimini de hızlandırır)
+venv/
+.git/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Eğitim verisi / geliştirme çıktıları - runtime'da gerekmiyor
+data/labeled/
+data/labeled_*/
+data/verify_snapshots/
+data/sample_frame.jpg
+data/logs/
+
+logs/
+image/
+tests/
+.github/
+*.md

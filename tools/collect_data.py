@@ -13,6 +13,13 @@ Kullanım:
     # 3 saat önceden başlayıp 2 saat öncesine kadar, 30 dakikada bir örnek al
     python tools/collect_data.py --slots config/slots/cam1.json \\
         --minutes-ago 180 --window-minutes 60 --interval 1800
+
+    # RTSP (kimlik doğrulamalı yerel IP kamera) - sadece canlı mod, --minutes-ago
+    # YouTube DVR/DASH geçmişine özel olduğu için RTSP ile kullanılamaz.
+    # Kullanıcı adı/şifreyi URL'ye GÖMMEYİN (.env + ${VAR} yer tutucusu, bkz.
+    # tools/annotate.py docstring'i) ve TEK TIRNAK kullanın:
+    python tools/collect_data.py --slots config/slots/cam_local.json \\
+        --source 'rtsp://${CAM_LOCAL_USER}:${CAM_LOCAL_PASS}@192.168.1.50:554/cam/realmonitor?channel=1&subtype=1'
 """
 
 import argparse
@@ -22,6 +29,7 @@ import time
 from datetime import datetime
 
 from park_slot.capture.file import FileSource
+from park_slot.capture.rtsp import RTSPSource
 from park_slot.capture.youtube import YouTubeSource
 from park_slot.capture.youtube_history import (
     compute_target_sequence,
@@ -30,6 +38,7 @@ from park_slot.capture.youtube_history import (
     resolve_dash_url,
 )
 from park_slot.training.collector import DataCollector
+from park_slot.utils.env import resolve_env_placeholders
 
 
 def _print_captured_at(captured_at: float) -> None:
@@ -144,9 +153,15 @@ def main():
             )
         print(f"Kaynak slot dosyasından alındı: {source_arg}")
 
+    if args.minutes_ago is not None and source_arg.startswith("rtsp://"):
+        parser.error(
+            "--minutes-ago YouTube DVR/DASH geçmişine özeldir, RTSP ile kullanılamaz "
+            "(RTSP canlı bir akıştır, geçmişe gidilemez) - --minutes-ago'yu kaldırın."
+        )
+
     collector = DataCollector(args.slots, output_dir=args.output, slot_filter=args.slot)
 
-    print(f"Kaynak: {source_arg}")
+    print(f"Kaynak: {source_arg}")  # source_arg hep ${VAR} yer tutuculu/placeholder halidir, şifre asla basılmaz
     print(f"Slotlar: {args.slots}")
     print(f"Çıktı: {args.output}")
 
@@ -159,10 +174,16 @@ def main():
         else:
             print(f"Mod: canlı | Aralık: {args.interval}s")
             print("Başlatılıyor...\n")
-            if source_arg.startswith("http"):
-                source = YouTubeSource(source_arg)
+            # ${VAR} yer tutucuları SADECE burada, bağlantı açılırken bellekte
+            # çözümlenir - source_arg (ve dolayısıyla loglanan her şey) hep
+            # placeholder halinde kalır, bkz. utils/env.py.
+            resolved_source = resolve_env_placeholders(source_arg)
+            if resolved_source.startswith("rtsp://"):
+                source = RTSPSource(resolved_source)
+            elif resolved_source.startswith("http"):
+                source = YouTubeSource(resolved_source)
             else:
-                source = FileSource(source_arg, loop=True)
+                source = FileSource(resolved_source, loop=True)
             completed = _run_live(source, collector, args.interval)
     finally:
         collector.print_stats()

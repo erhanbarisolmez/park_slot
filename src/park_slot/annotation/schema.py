@@ -43,6 +43,10 @@ class SlotState(BaseModel):
     stable_since: float = 0.0
     minimap_x: Optional[float] = None
     minimap_y: Optional[float] = None
+    # Operatör bu slotu /live'dan elle sabitlediyse True - otomatik
+    # (model) güncellemeleri bu durumda görmezden gelinir, bkz.
+    # StateStore.set_override / clear_override.
+    manual_override: bool = False
 
 
 class CameraSlotConfig(BaseModel):

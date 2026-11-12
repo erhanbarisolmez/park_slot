@@ -1,14 +1,27 @@
-"""RTSP kamera desteği - ileride gerçek kameralar için.
+"""RTSP kamera desteği - gerçek (kimlik doğrulamalı) IP kameralar için.
 
-Şimdilik iskelet, YouTube'dan RTSP'ye geçişte doldurulacak.
+URL genelde rtsp://kullanici:sifre@ip:port/yol formatında, kimlik bilgisi
+içerir - loglara/hata mesajlarına ASLA çözümlenmiş haliyle yazılmaz (bkz.
+_mask_credentials), sadece maskelenmiş hali görünür. Gerçek URL'nin
+${VAR} yer tutucularından çözümlenmesi çağıran tarafın sorumluluğu
+(bkz. park_slot.utils.env.resolve_env_placeholders) - bu sınıf zaten
+çözümlenmiş, kullanıma hazır bir URL alır.
 """
 
 import logging
+import re
 
 import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+_CREDENTIALS_RE = re.compile(r"://[^@/]+@")
+
+
+def _mask_credentials(url: str) -> str:
+    """Log/hata mesajlarında göstermek için url'deki kullanici:sifre@ kısmını maskele."""
+    return _CREDENTIALS_RE.sub("://***:***@", url)
 
 
 class RTSPSource:
@@ -21,8 +34,8 @@ class RTSPSource:
     def open(self) -> None:
         self._cap = cv2.VideoCapture(self._url)
         if not self._cap.isOpened():
-            raise RuntimeError(f"RTSP bağlantısı açılamadı: {self._url}")
-        logger.info("RTSP bağlantısı kuruldu: %s", self._url)
+            raise RuntimeError(f"RTSP bağlantısı açılamadı: {_mask_credentials(self._url)}")
+        logger.info("RTSP bağlantısı kuruldu: %s", _mask_credentials(self._url))
 
     def read(self) -> np.ndarray | None:
         if self._cap is None:

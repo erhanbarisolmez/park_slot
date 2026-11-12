@@ -7,6 +7,8 @@ import yaml
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 
+from park_slot.utils.env import resolve_env_placeholders
+
 CONFIG_DIR = Path(__file__).parent.parent.parent / "config"
 
 
@@ -22,6 +24,14 @@ class ModelConfig(BaseModel):
     checkpoint_path: str = "data/models/best.pth"
     onnx_path: str = "data/exports/model.onnx"
     confidence_threshold: float = 0.7
+
+
+class DetectorConfig(BaseModel):
+    """Araç tespiti (hibrit düzeltme, torchvision/BSD - bkz. inference/vehicle_detector.py)"""
+    enabled: bool = False
+    model_path: str = "fasterrcnn_mobilenet_v3_large_320_fpn"
+    imgsz: int = 416
+    conf_threshold: float = 0.4
 
 
 class TrainingConfig(BaseModel):
@@ -49,13 +59,29 @@ class LoggingConfig(BaseModel):
     format: str = "json"
 
 
+class MqttConfig(BaseModel):
+    """selfpark-backend'e kamera doluluk verisi yayınlamak için MQTT ayarları.
+
+    camera_code, backend'de POST /api/v0/camera/add ile önceden kayıt edilmiş
+    cameraCode ile birebir eşleşmeli - SlotManager.camera_id (örn. "cam1") ile
+    karıştırılmamalı, o içsel/dosya bazlı bir kimliktir.
+    """
+    enabled: bool = False
+    broker_host: str = "localhost"
+    broker_port: int = 1883
+    camera_code: str = ""
+    qos: int = 1
+
+
 class Settings(BaseSettings):
     capture: CaptureConfig = CaptureConfig()
     model: ModelConfig = ModelConfig()
+    detector: DetectorConfig = DetectorConfig()
     training: TrainingConfig = TrainingConfig()
     inference: InferenceConfig = InferenceConfig()
     api: ApiConfig = ApiConfig()
     logging: LoggingConfig = LoggingConfig()
+    mqtt: MqttConfig = MqttConfig()
 
 
 def load_settings(config_path: Path | None = None) -> Settings:
@@ -66,6 +92,13 @@ def load_settings(config_path: Path | None = None) -> Settings:
     if config_path.exists():
         with open(config_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
+
+        # source_url'deki ${VAR} yer tutucuları (örn. RTSP kimlik bilgisi)
+        # .env'den çözümlenir - bkz. utils/env.py modül docstring'i.
+        source_url = data.get("capture", {}).get("source_url")
+        if source_url:
+            data["capture"]["source_url"] = resolve_env_placeholders(source_url)
+
         return Settings(**data)
 
     return Settings()

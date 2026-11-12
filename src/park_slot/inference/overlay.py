@@ -32,6 +32,7 @@ def draw_overlay(
     slot_polygons: dict[int, list[list[int]]],
     alpha: float = 0.35,
     perspective_transform: Optional[list[list[float]]] = None,
+    vehicle_count: Optional[int] = None,
 ) -> np.ndarray:
     """Slot durumlarını kare üzerine çiz.
 
@@ -43,6 +44,8 @@ def draw_overlay(
         perspective_transform: Varsa, zemin düzlemine kuşbakışı homografi
             matrisi (tools/mark_perspective.py ile üretilir) - sağ alt köşeye
             küçük bir kuşbakışı mini-harite eklenir.
+        vehicle_count: Varsa (araç dedektörü etkinse), bilgi paneline
+            "Bilinmiyor" satırının altına "Dedektör: N araç" eklenir.
 
     Returns:
         Overlay çizilmiş görüntü
@@ -61,8 +64,12 @@ def draw_overlay(
         # Yarı saydam dolgu
         cv2.fillPoly(overlay, [pts], color)
 
-        # Kenar çizgisi
-        cv2.polylines(output, [pts], True, color, 2)
+        # Kenar çizgisi - operatörün elle sabitlediği slotlar beyaz kalın
+        # çerçeveyle ayırt edilir (bkz. StateStore.set_override)
+        if slot_state.manual_override:
+            cv2.polylines(output, [pts], True, (255, 255, 255), 3)
+        else:
+            cv2.polylines(output, [pts], True, color, 2)
 
         # Etiket
         _draw_label(output, slot_state, pts)
@@ -71,7 +78,7 @@ def draw_overlay(
     cv2.addWeighted(overlay, alpha, output, 1 - alpha, 0, output)
 
     # Bilgi paneli
-    _draw_info_panel(output, status)
+    _draw_info_panel(output, status, vehicle_count)
 
     if perspective_transform is not None:
         minimap = _draw_minimap(status, slot_polygons, perspective_transform)
@@ -155,7 +162,7 @@ def _draw_label(
 
     label = state.label or f"S{state.id}"
     conf = f"{state.confidence:.0%}"
-    text = f"{label} {conf}"
+    text = f"{label} {conf}" + (" [M]" if state.manual_override else "")
 
     # Arka plan kutusu
     (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
@@ -163,12 +170,17 @@ def _draw_label(
     cv2.putText(frame, text, (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
 
-def _draw_info_panel(frame: np.ndarray, status: ParkingStatus) -> None:
+def _draw_info_panel(frame: np.ndarray, status: ParkingStatus, vehicle_count: Optional[int] = None) -> None:
     """Üst köşeye özet bilgi paneli çiz."""
     h, w = frame.shape[:2]
 
+    # vehicle_count verilmişse (dedektör etkinse) panel bir satır uzar -
+    # "kaç slot dolu" ile "dedektörün gördüğü gerçek araç sayısı"nı aynı
+    # panelde yan yana karşılaştırmak için.
+    panel_height = 120 if vehicle_count is not None else 100
+
     # Panel arka planı
-    cv2.rectangle(frame, (0, 0), (250, 100), (0, 0, 0), -1)
+    cv2.rectangle(frame, (0, 0), (250, panel_height), (0, 0, 0), -1)
 
     # Metin
     cv2.putText(frame, f"Toplam: {status.total_slots}", (10, 20),
@@ -179,6 +191,9 @@ def _draw_info_panel(frame: np.ndarray, status: ParkingStatus) -> None:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS[SlotStatus.OCCUPIED], 1)
     cv2.putText(frame, f"Bilinmiyor: {status.unknown}", (10, 80),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS[SlotStatus.UNKNOWN], 1)
+    if vehicle_count is not None:
+        cv2.putText(frame, f"Dedektor: {vehicle_count} arac", (10, 100),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 150, 0), 1)
 
     # Doluluk oranı
     if status.total_slots > 0:

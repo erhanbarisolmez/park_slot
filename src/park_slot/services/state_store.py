@@ -40,9 +40,19 @@ class StateStore:
         occlusion_max_seconds: float = 25.0,
         occlusion_max_distance: float = 0.25,
         minimap_coords: dict[int, tuple[float, float]] | None = None,
+        override_release_seconds: float = 30.0,
     ):
         """
         Args:
+            override_release_seconds: Operatörün set_override ile sabitlediği
+                bir slot, modelin ham tahmini (raw_status) bu kadar saniye
+                KESİNTİSİZ override'dan farklı kalırsa otomatik olarak serbest
+                bırakılır (örn. "dolu" diye sabitlenmiş bir slottan araç
+                gerçekten ayrılırsa, elle "otomatiğe döndür" demeye gerek
+                kalmadan normal hysteresis'e döner). confirm_seconds'tan uzun
+                tutulur ki kısa/gürültülü yanlış tahminler override'ı
+                yanlışlıkla bozmasın - sadece gerçekten kalıcı bir değişiklik
+                serbest bırakır.
             occlusion_min_slots: Tek bir update_batch çağrısında bu kadar (veya
                 daha fazla) slot AYNI ANDA aynı yöne (örn. hepsi OCCUPIED'e)
                 geçmeye çalışırsa, bu bağımsız park olayları değil, tek bir
@@ -78,6 +88,7 @@ class StateStore:
         self._occlusion_min_slots = occlusion_min_slots
         self._occlusion_max_seconds = occlusion_max_seconds
         self._occlusion_max_distance = occlusion_max_distance
+        self._override_release_seconds = override_release_seconds
         self._occlusion_since: dict[int, float] = {}
         # occlusion_max_seconds dolup serbest bırakılan ama onaylı durumu
         # henüz gerçek değerine dönmemiş (hâlâ UNKNOWN) slotlar - bunlar
@@ -87,6 +98,14 @@ class StateStore:
         self._recovering: set[int] = set()
         self._slots: dict[int, SlotState] = {}
         self._pending: dict[int, tuple[SlotStatus, float]] = {}
+        # Operatörün /live üzerinden elle sabitlediği slotlar - bkz.
+        # set_override/clear_override. Bu slotlar update_batch/update_slot'ta
+        # otomatik tahminleri (ve toplu engellenme tespitini) görmezden gelir.
+        self._overrides: dict[int, SlotStatus] = {}
+        # Her override'lı slot için, ham tahminin (raw_status) override'dan
+        # KESİNTİSİZ farklı görünmeye başladığı zaman - override_release_seconds
+        # dolunca otomatik serbest bırakmak için (bkz. update_batch).
+        self._override_disagree_since: dict[int, float] = {}
         self._lock = threading.Lock()
         self._last_update: float = 0
         self._callbacks: list = []  # Durum değişince çağrılacak fonksiyonlar
@@ -213,7 +232,7 @@ class StateStore:
             # yeniden yakalanmalarını (ve hiç bitmeyen bir döngüyü) önler.
             candidates_by_target: dict[SlotStatus, list[int]] = {}
             for slot_id, _label, status, _confidence in updates:
-                if slot_id in self._recovering:
+                if slot_id in self._recovering or slot_id in self._overrides:
                     continue
                 old = self._slots.get(slot_id)
                 if old is not None and status != old.status:
@@ -246,6 +265,36 @@ class StateStore:
                     self._occlusion_since.pop(slot_id, None)
 
             for slot_id, label, status, confidence in updates:
+                if slot_id in self._overrides:
+                    if status == self._overrides[slot_id]:
+                        # Ham tahmin override ile uyuşuyor - gerçek bir
+                        # anlaşmazlık yok, sayaç sıfırlanır.
+                        self._override_disagree_since.pop(slot_id, None)
+                        old = self._slots.get(slot_id)
+                        if old is not None:
+                            self._slots[slot_id] = old.model_copy(update={"raw_status": status})
+                        continue
+
+                    started = self._override_disagree_since.setdefault(slot_id, now)
+                    if now - started < self._override_release_seconds:
+                        # Henüz yeterince uzun süredir anlaşmazlık yok -
+                        # override korunur, sadece raw_status güncellenir.
+                        old = self._slots.get(slot_id)
+                        if old is not None:
+                            self._slots[slot_id] = old.model_copy(update={"raw_status": status})
+                        continue
+
+                    # override_release_seconds doldu: model kesintisiz aksini
+                    # söylüyor, gerçek bir değişiklik olduğu kabul edilip
+                    # override otomatik kaldırılır - bu slot şimdi aşağıdaki
+                    # normal hysteresis akışına devam eder (continue YOK).
+                    self._overrides.pop(slot_id, None)
+                    self._override_disagree_since.pop(slot_id, None)
+                    logger.info(
+                        "Slot %d: manuel override %ds boyunca modelin aksini "
+                        "söylemesi üzerine otomatik kaldırıldı", slot_id, self._override_release_seconds,
+                    )
+
                 hysteresis_input = SlotStatus.UNKNOWN if slot_id in final_occluded else status
                 confirmed_status, changed = self._apply_hysteresis(slot_id, hysteresis_input, now)
 
@@ -292,6 +341,51 @@ class StateStore:
             unknown=unknown,
             slots=slots,
         )
+
+    def set_override(self, slot_id: int, status: SlotStatus) -> Optional[SlotState]:
+        """Bir slotu operatör karar olarak sabitle (otomatik tahminler görmezden gelinir).
+
+        Returns:
+            Güncellenmiş SlotState, slot hiç görülmemişse None.
+        """
+        now = self._clock()
+        with self._lock:
+            old = self._slots.get(slot_id)
+            if old is None:
+                return None
+
+            self._overrides[slot_id] = status
+            self._pending.pop(slot_id, None)
+            self._occlusion_since.pop(slot_id, None)
+            self._recovering.discard(slot_id)
+
+            new_state = old.model_copy(update={
+                "status": status,
+                "confidence": 1.0,
+                "stable_since": now,
+                "manual_override": True,
+            })
+            self._slots[slot_id] = new_state
+            self._last_update = now
+
+        self._notify(new_state)
+        return new_state
+
+    def clear_override(self, slot_id: int) -> Optional[SlotState]:
+        """Operatör sabitlemesini kaldır - sonraki update_batch'ten itibaren
+        otomatik tahminler normal hysteresis ile tekrar geçerli olur.
+
+        Durum hemen değişmez (bir sonraki onaylı değişikliğe kadar override
+        değeri gösterilmeye devam eder) - ani flicker'ı önler.
+        """
+        with self._lock:
+            self._overrides.pop(slot_id, None)
+            old = self._slots.get(slot_id)
+            if old is None:
+                return None
+            new_state = old.model_copy(update={"manual_override": False})
+            self._slots[slot_id] = new_state
+        return new_state
 
     def get_slot(self, slot_id: int) -> Optional[SlotState]:
         """Tek bir slot'un durumunu döndür."""

@@ -8,7 +8,7 @@ FastAPI bu modelleri kullanarak:
 
 from pydantic import BaseModel
 
-from park_slot.annotation.schema import ParkingStatus, SlotState
+from park_slot.annotation.schema import ParkingStatus, SlotState, SlotStatus
 
 
 class HealthResponse(BaseModel):
@@ -19,6 +19,9 @@ class HealthResponse(BaseModel):
     total_frames: int = 0
     fps: float = 0.0
     avg_inference_ms: float = 0.0
+    # Dedektörün slot'tan BAĞIMSIZ ham araç sayısı (detector kapalıysa null) -
+    # bkz. inference/pipeline.py Pipeline.get_vehicle_count
+    detected_vehicle_count: int | None = None
 
 
 class StatusResponse(BaseModel):
@@ -35,6 +38,26 @@ class SlotsResponse(BaseModel):
     """GET /api/v1/slots yanıtı."""
     camera_id: str
     slots: list[SlotState]
+
+
+class SlotClickRequest(BaseModel):
+    """POST /api/v1/slots/click isteği - /live sayfasında tıklanan piksel
+    koordinatı (orijinal kare çözünürlüğünde, tarayıcı tarafında ölçeklenir)."""
+    x: int
+    y: int
+
+
+class SlotClickResponse(BaseModel):
+    """POST /api/v1/slots/click yanıtı."""
+    slot_id: int
+    label: str
+    status: SlotStatus
+    manual_override: bool
+
+
+class SlotOverrideRequest(BaseModel):
+    """POST /api/v1/slots/{id}/override isteği."""
+    status: SlotStatus
 
 
 class WebSocketMessage(BaseModel):

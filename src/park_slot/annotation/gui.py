@@ -66,10 +66,23 @@ class SlotAnnotator:
             logger.debug("Nokta eklendi: (%d, %d)", x, y)
 
         elif event == cv2.EVENT_RBUTTONDOWN:
-            # Sağ tık: son noktayı sil
             if self._current_points:
+                # Aktif çizim varken sağ tık: son noktayı sil
                 removed = self._current_points.pop()
                 logger.debug("Nokta silindi: (%d, %d)", removed[0], removed[1])
+            else:
+                # Çizim yokken sağ tık: tıklanan noktadaki kaydedilmiş slotu sil
+                # (initial_slots ile yüklenmiş mevcut slotları düzenlemek için)
+                self._delete_slot_at(x, y)
+
+    def _delete_slot_at(self, x: int, y: int) -> None:
+        """(x, y) noktasını içeren kaydedilmiş slotu sil (varsa, en üsttekini)."""
+        for i in range(len(self._slots) - 1, -1, -1):
+            pts = np.array(self._slots[i].polygon, dtype=np.int32)
+            if cv2.pointPolygonTest(pts, (float(x), float(y)), False) >= 0:
+                removed = self._slots.pop(i)
+                logger.info("Slot silindi: %s", removed.label)
+                return
 
     def _draw(self) -> np.ndarray:
         """Görüntü üzerine slotları ve aktif polygon'u çiz."""
@@ -96,7 +109,7 @@ class SlotAnnotator:
         # Bilgi çubuğu
         info = f"Slot #{self._next_id} | Noktalar: {len(self._current_points)} | Toplam: {len(self._slots)}"
         cv2.putText(canvas, info, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_TEXT, 2)
-        cv2.putText(canvas, "Sol:Ekle | Sag:Geri | Enter:Kaydet | S:Dosyala ve Cik | Q:Kaydetmeden Cik",
+        cv2.putText(canvas, "Sol:Ekle | Sag:Geri/Slot Sil | Enter:Kaydet | S:Dosyala ve Cik | Q:Kaydetmeden Cik",
                     (10, canvas.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_TEXT, 1)
 
         return canvas

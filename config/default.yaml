@@ -31,3 +31,10 @@ api:
 logging:
   level: "INFO"
   format: "json" #json veya text
+# selfpark-backend'e MQTT yayını (camera_code backend'de önceden kayıtlı olmalı)
+mqtt:
+  enabled: false
+  broker_host: "localhost"
+  broker_port: 1883
+  camera_code: ""
+  qos: 1

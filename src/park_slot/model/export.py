@@ -55,6 +55,7 @@ def export_to_onnx(
             "logits": {0: "batch_size"},
         },
         opset_version=17,
+        dynamo=False,  # legacy exporter: tek dosya .onnx, dynamic_axes ile uyumlu
     )
 
     logger.info("ONNX export tamamlandı: %s", output_path)
