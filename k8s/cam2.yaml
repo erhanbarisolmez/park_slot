@@ -22,8 +22,8 @@ spec:
         hardware: highmem
       containers:
         - name: park-slot
-          image: park-slot:local
-          imagePullPolicy: IfNotPresent
+          image: ghcr.io/erhanbarisolmez/park_slot:latest
+          imagePullPolicy: Always
           args: ["--config", "config/cam2.yaml", "--slots", "config/slots/cam2.json"]
           ports:
             - containerPort: 8001
