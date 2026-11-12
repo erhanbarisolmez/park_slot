@@ -1,0 +1,4 @@
+ansible_host: 192.168.4.90
+ansible_user: selftech
+k3s_node_name: k3s-worker-01
+hardware: highmem

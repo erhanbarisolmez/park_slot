@@ -1,0 +1,45 @@
+---
+# 1. PLAY: her worker cihazda (become: true -> sudo ile) k3s agent'ı kurup
+# master'a join ettiriyor. secrets.yml'deki k3s_url/k3s_token kullanılıyor.
+- name: Yeni cihazları k3s kümesine worker olarak kat
+  hosts: k3s_workers
+  become: true
+  vars_files:
+    - secrets.yml
+  tasks:
+    - name: k3s agent kurulumu (zaten kuruluysa atlar)
+      # creates: dosyası zaten varsa bu task'ı atlar -> playbook'u tekrar
+      # çalıştırmak zaten join olmuş bir cihazı bozmaz (idempotent)
+      # K3S_NODE_NAME: makinenin gerçek OS hostname'i ne olursa olsun, node
+      # kümeye bizim host_vars'ta verdiğimiz k3s_node_name ile kayıt olsun
+      ansible.builtin.shell: |
+        curl -sfL https://get.k3s.io | K3S_URL={{ k3s_url }} K3S_TOKEN={{ k3s_token }} K3S_NODE_NAME={{ k3s_node_name }} sh -
+      args:
+        creates: /etc/systemd/system/k3s-agent.service
+
+    - name: k3s-agent servisinin ayakta olduğunu doğrula
+      ansible.builtin.systemd:
+        name: k3s-agent
+        state: started
+        enabled: true
+
+# 2. PLAY: node etiketleme işi worker cihazda değil, master'da (bu makinede)
+# kubectl ile yapılıyor - bu yüzden her task delegate_to: localhost taşıyor.
+- name: Node'ları donanımına göre etiketle (master üzerinden kubectl ile)
+  hosts: k3s_workers
+  gather_facts: false
+  tasks:
+    - name: Node'un kümeye katılmasını bekle
+      # join script'i bitse de node'un k8s API'de Ready görünmesi birkaç saniye sürebilir
+      ansible.builtin.command: >
+        kubectl wait --for=condition=Ready node/{{ k3s_node_name }} --timeout=120s
+      delegate_to: localhost
+      changed_when: false
+
+    - name: hardware label'ını uygula
+      # host_vars/<cihaz>.yml'deki hardware değeri (gpu/highmem/generic) buraya işleniyor;
+      # ileride nodeSelector ile "GPU gereken pod'u gpu etiketli node'a gönder" demek için
+      ansible.builtin.command: >
+        kubectl label node {{ k3s_node_name }} hardware={{ hardware }} --overwrite
+      delegate_to: localhost
+      when: hardware is defined

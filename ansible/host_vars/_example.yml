@@ -1,0 +1,9 @@
+# Bu bir şablondur. Gerçek bir cihaz eklerken:
+#   cp host_vars/_example.yml host_vars/<inventory.ini'deki-isim>.yml
+# ve aşağıdaki değerleri doldurun.
+ansible_host: 192.168.4.90
+ansible_user: erhanbarisolmez
+# join sonrası `kubectl get nodes` çıktısındaki NAME ile birebir aynı olmalı
+k3s_node_name: ornek-cihaz
+# gpu | highmem | generic -> join-k3s.yml bu etiketi node'a uygular
+hardware: generic

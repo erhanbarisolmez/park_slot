@@ -36,3 +36,6 @@ Thumbs.db
 # Sırlar - RTSP kamera kimlik bilgisi gibi değerler buraya, config/*.yaml ve
 # config/slots/*.json'a sadece ${VAR} yer tutucusu (bkz. src/park_slot/utils/env.py)
 .env
+
+# Ansible - k3s join token'ı burada, repo'ya girmesin
+ansible/secrets.yml

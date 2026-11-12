@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: park-slot-cam1
+  namespace: park-slot
+  labels:
+    app: park-slot
+    camera: cam1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: park-slot
+      camera: cam1
+  template:
+    metadata:
+      labels:
+        app: park-slot
+        camera: cam1
+    spec:
+      nodeSelector:
+        hardware: highmem
+      containers:
+        - name: park-slot
+          image: park-slot:local
+          imagePullPolicy: IfNotPresent
+          args: ["--config", "config/cam1.yaml", "--slots", "config/slots/cam1.json"]
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          volumeMounts:
+            - name: logs
+              mountPath: /app/logs
+            - name: data-logs
+              mountPath: /app/data/logs
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: data-logs
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: park-slot-cam1
+  namespace: park-slot
+spec:
+  type: NodePort
+  selector:
+    app: park-slot
+    camera: cam1
+  ports:
+    - port: 8000
+      targetPort: 8000
+      nodePort: 30081
