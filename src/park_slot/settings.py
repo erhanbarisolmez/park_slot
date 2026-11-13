@@ -33,6 +33,10 @@ class DetectorConfig(BaseModel):
     model_path: str = "fasterrcnn_mobilenet_v3_large_320_fpn"
     imgsz: int = 416
     conf_threshold: float = 0.4
+    # Dedektör ~450ms/kare CPU harcıyor (bkz. vehicle_detector.py docstring) -
+    # her N pipeline iterasyonunda bir çalıştırılır, aradaki karelerde son
+    # sonuç cache'den kullanılır (bkz. Pipeline._vehicle_detector_interval).
+    interval: int = 3
 
 
 class TrainingConfig(BaseModel):

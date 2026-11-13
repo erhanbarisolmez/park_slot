@@ -437,7 +437,7 @@ def create_app(
         monitor: Performans metrikleri
         prediction_log: Proxy kalite/drift metrikleri için tahmin günlüğü (opsiyonel)
         cors_origins: İzin verilen origin'ler (varsayılan: hepsi)
-        pipeline: /live/frame.jpg ve /live/stream.mjpg'nin kareyi okuduğu pipeline (opsiyonel)
+        pipeline: /live/frame.jpg'nin kareyi okuduğu pipeline (opsiyonel)
     """
     app = FastAPI(
         title="ParkSlot API",
@@ -464,9 +464,9 @@ def create_app(
     async def minimap_page():
         return _MINIMAP_PAGE
 
-    # Overlay'li canlı görüntü - /live/stream.mjpg'i <img> içinde gösterir
-    # (model doğruluğunu gözle doğrulamak için; k3s/container'da cv2.imshow
-    # kullanılamadığından eklendi)
+    # Overlay'li canlı görüntü - /live/frame.jpg'yi periyodik yenilenen <img>
+    # içinde gösterir (model doğruluğunu gözle doğrulamak için; k3s/container'da
+    # cv2.imshow kullanılamadığından eklendi)
     @app.get("/live", response_class=HTMLResponse)
     async def live_page():
         return _LIVE_PAGE

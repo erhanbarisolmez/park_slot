@@ -7,6 +7,13 @@ import torch
 from park_slot.annotation.geometry import polygon_to_quad
 from park_slot.annotation.transform import compute_perspective_matrix, warp_image
 
+# CLAHE nesnesi stateless/reusable - her frame'de yeniden yaratmaya gerek yok.
+_CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+# ImageNet ortalaması/std - her slot/frame'de yeniden oluşturmaya gerek yok.
+_NORMALIZE_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+_NORMALIZE_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
 
 def crop_polygon_warped(image: np.ndarray, polygon: list[list[int]], output_size: int = 64) -> np.ndarray:
     """Polygonu kırp + perspektif düzelt + kare boyuta getir - tek adımda.
@@ -45,8 +52,7 @@ def equalize_lighting(image: np.ndarray) -> np.ndarray:
     """
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     l_channel, a_channel, b_channel = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    l_eq = clahe.apply(l_channel)
+    l_eq = _CLAHE.apply(l_channel)
     lab_eq = cv2.merge((l_eq, a_channel, b_channel))
     return cv2.cvtColor(lab_eq, cv2.COLOR_LAB2BGR)
 
@@ -61,8 +67,6 @@ def normalize(image: np.ndarray) -> torch.Tensor:
     tensor = tensor.permute(2, 0, 1)  # HWC -> CHW
 
     # ImageNet ortalaması ile normalize
-    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-    tensor = (tensor - mean) / std
+    tensor = (tensor - _NORMALIZE_MEAN) / _NORMALIZE_STD
 
     return tensor

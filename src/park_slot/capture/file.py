@@ -10,6 +10,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from park_slot.settings import get_cpu_thread_limit
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +45,9 @@ class FileSource:
             raise FileNotFoundError(f"Video bulunamadı: {self._path}")
 
         self._cap = cv2.VideoCapture(str(self._path))
+        # FFmpeg decode thread'leri cv2.setNumThreads()/CPU_LIMIT'ten
+        # bağımsız, host'un tüm çekirdeklerine göre default'lanır.
+        self._cap.set(cv2.CAP_PROP_N_THREADS, get_cpu_thread_limit())
         if not self._cap.isOpened():
             raise RuntimeError(f"Video açılamadı: {self._path}")
 

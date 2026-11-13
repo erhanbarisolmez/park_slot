@@ -7,17 +7,14 @@ Endpoint'ler:
 - GET /api/v1/slots/{id} → Tek bir slot'un durumu
 - GET /api/v1/quality  → Proxy kalite/drift sinyalleri (flip rate, unknown rate, güven)
 - GET /live/frame.jpg  → Overlay çizilmiş son kare (tek JPEG)
-- GET /live/stream.mjpg → Aynı karenin sürekli MJPEG akışı (tarayıcıda canlı izleme)
 - POST /api/v1/slots/click → Tıklanan piksel koordinatındaki slotu bul
 - POST /api/v1/slots/{id}/override → Slotu operatör kararı olarak sabitle
 - DELETE /api/v1/slots/{id}/override → Sabitlemeyi kaldır
 """
 
-import time
-
 import cv2
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 
 from park_slot.api.models import (
     HealthResponse,
@@ -182,10 +179,23 @@ def get_quality(window_seconds: float = 3600.0):
     return QualityResponse(**_prediction_log.get_quality_metrics(window_seconds))
 
 
+# (version, jpeg_bytes) - pipeline frame_interval=1.5s'de bir yeni kare
+# üretirken /live sayfası her 500ms'de bir frame.jpg'i polluyor; versiyon
+# değişmediyse yeniden encode etmek yerine bu cache'i döndür.
+_jpeg_cache: tuple[int, bytes] = (-1, b"")
+
+
 def _encode_latest_jpeg() -> bytes:
-    """Pipeline'ın son overlay'li karesini JPEG'e çevir."""
+    """Pipeline'ın son overlay'li karesini JPEG'e çevir (versiyon değişmediyse cache'den döner)."""
+    global _jpeg_cache
+
     if _pipeline is None:
         raise HTTPException(status_code=503, detail="Pipeline hazır değil")
+
+    version = _pipeline.get_display_version()
+    cached_version, cached_jpeg = _jpeg_cache
+    if version == cached_version and version != -1:
+        return cached_jpeg
 
     frame = _pipeline.get_display_frame()
     if frame is None:
@@ -194,37 +204,13 @@ def _encode_latest_jpeg() -> bytes:
     ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
     if not ok:
         raise HTTPException(status_code=500, detail="JPEG encode başarısız")
-    return buf.tobytes()
+
+    jpeg_bytes = buf.tobytes()
+    _jpeg_cache = (version, jpeg_bytes)
+    return jpeg_bytes
 
 
 @router.get("/live/frame.jpg")
 def live_frame():
     """Overlay (slot durumu) çizilmiş son kare - tek JPEG."""
     return Response(content=_encode_latest_jpeg(), media_type="image/jpeg")
-
-
-@router.get("/live/stream.mjpg")
-def live_stream():
-    """Aynı kareyi sürekli gönderen MJPEG akışı - doğrudan tarayıcıda açılabilir."""
-    if _pipeline is None:
-        raise HTTPException(status_code=503, detail="Pipeline hazır değil")
-
-    def generate():
-        while True:
-            try:
-                jpg = _encode_latest_jpeg()
-            except HTTPException:
-                time.sleep(0.5)
-                continue
-            yield (
-                b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
-                + str(len(jpg)).encode()
-                + b"\r\n\r\n"
-                + jpg
-                + b"\r\n"
-            )
-            time.sleep(0.2)
-
-    return StreamingResponse(
-        generate(), media_type="multipart/x-mixed-replace; boundary=frame"
-    )

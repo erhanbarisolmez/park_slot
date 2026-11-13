@@ -19,6 +19,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from park_slot.settings import get_cpu_thread_limit
 from park_slot.utils.retry import retry
 
 logger = logging.getLogger(__name__)
@@ -136,6 +137,11 @@ class YouTubeSource:
         # Mümkünse arabelleği küçük tut - seyrek read() çağrılarında (örn.
         # tools/collect_data.py) eski/bayat kare dönmesini azaltır.
         self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        # FFmpeg decode thread'leri cv2.setNumThreads()/CPU_LIMIT'ten bağımsız,
+        # host'un tüm çekirdeklerine göre default'lanır - OpenCV build'i
+        # destekliyorsa container limitine sabitle (desteklemiyorsa .set()
+        # sessizce False döner, hata fırlatmaz).
+        self._cap.set(cv2.CAP_PROP_N_THREADS, get_cpu_thread_limit())
 
         if not self._cap.isOpened():
             raise RuntimeError("OpenCV stream'i açamadı")

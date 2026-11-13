@@ -16,6 +16,7 @@ detector:
   model_path: "fasterrcnn_mobilenet_v3_large_320_fpn"
   imgsz: 416
   conf_threshold: 0.4
+  interval: 3
 # Eğitim ayarları (bu config'te kullanılmıyor, referans)
 training:
   batch_size: 32
@@ -26,7 +27,6 @@ training:
   data_dir: "data/labeled_cam2"
 # Çıkarım ayarları
 inference:
-  batch_size: 16
   device: "cpu"
 # API ayarları (cam1 ile aynı anda çalışabilmesi için farklı port)
 api:

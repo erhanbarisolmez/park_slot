@@ -64,6 +64,10 @@ class MqttPublisher:
                 client_id=f"park_slot_{self._camera_id}_pub",
             )
             client.connect_async(self._settings.broker_host, self._settings.broker_port)
+            # loop_start() kalıcı bir arka plan network thread'i açar - şu an
+            # tüm kamera config'lerinde mqtt.enabled=false olduğu için bu
+            # kod yolu tetiklenmiyor; enabled=true'ya çevirmek CPU_LIMIT'e
+            # pinlenmemiş yeni bir thread eklemek demek, bilinçli yapılmalı.
             client.loop_start()
             logger.info(
                 "MQTT publisher broker'a bağlanıyor: %s:%d (camera_code=%s)",

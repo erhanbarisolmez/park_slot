@@ -43,6 +43,7 @@ class Pipeline:
         frame_interval: float = 2.0,
         show_window: bool = False,
         vehicle_detector: VehicleDetector | None = None,
+        vehicle_detector_interval: int = 1,
     ):
         self._source = source
         self._engine = engine
@@ -52,11 +53,22 @@ class Pipeline:
         self._frame_interval = frame_interval
         self._show_window = show_window
         self._vehicle_detector = vehicle_detector
+        # Dedektör (~450ms/kare, bkz. vehicle_detector.py) sadece yavaş
+        # değişen bir fiziksel durumu (park edilmiş araç) geometrik olarak
+        # düzeltiyor - gerçek zamanlı takip değil, her kare çalıştırmaya
+        # gerek yok. Atlanan karelerde son sonuç cache'den kullanılır.
+        self._vehicle_detector_interval = max(1, vehicle_detector_interval)
+        self._frame_count = 0
+        self._cached_vehicle_detections: list = []
+        self._cached_assigned_ids: set[int] = set()
         self._running = False
         self._thread: threading.Thread | None = None
         self._display_lock = threading.Lock()
         self._latest_display = None
         self._latest_vehicle_count: int | None = None
+        # /live/frame.jpg her poll'da yeniden encode etmesin diye - sadece
+        # burada yeni bir display frame üretildiğinde artar.
+        self._display_version = 0
 
         # Varsa kuşbakışı mini-harita için homografi matrisi (bkz. tools/mark_perspective.py)
         self._perspective_transform = slot_manager.config.perspective_transform
@@ -137,6 +149,11 @@ class Pipeline:
         with self._display_lock:
             return self._latest_display
 
+    def get_display_version(self) -> int:
+        """Son display frame'in versiyonu (değişmediyse çağıran taraf cache'ini kullanabilir)."""
+        with self._display_lock:
+            return self._display_version
+
     def get_vehicle_count(self) -> int | None:
         """Dedektörün slot'tan BAĞIMSIZ, ham araç sayısı (detector kapalıysa None).
 
@@ -195,19 +212,27 @@ class Pipeline:
         # S3/S5/S6'da gerçekten dolu slotları yanlışlıkla boşalttı -
         # kaldırıldı. Yanlış "boş" (gerçekte dolu), yanlış "dolu"dan daha
         # zararlı (kullanıcıyı boşuna oraya yönlendirir).
+        self._frame_count += 1
         assigned_ids: set[int] = set()
         vehicle_detections: list = []
         if self._vehicle_detector is not None:
-            try:
-                raw_detections = self._vehicle_detector.detect(frame)
-                rx0, ry0, rx1, ry1 = self._detection_roi
-                vehicle_detections = [
-                    d for d in raw_detections
-                    if rx0 <= d.ground_point[0] <= rx1 and ry0 <= d.ground_point[1] <= ry1
-                ]
-                assigned_ids = assign_to_slots(vehicle_detections, self._polygons)
-            except Exception as e:
-                logger.error("Araç tespiti hatası: %s", e)
+            run_detector = self._frame_count % self._vehicle_detector_interval == 0
+            if run_detector:
+                try:
+                    raw_detections = self._vehicle_detector.detect(frame)
+                    rx0, ry0, rx1, ry1 = self._detection_roi
+                    vehicle_detections = [
+                        d for d in raw_detections
+                        if rx0 <= d.ground_point[0] <= rx1 and ry0 <= d.ground_point[1] <= ry1
+                    ]
+                    assigned_ids = assign_to_slots(vehicle_detections, self._polygons)
+                    self._cached_vehicle_detections = vehicle_detections
+                    self._cached_assigned_ids = assigned_ids
+                except Exception as e:
+                    logger.error("Araç tespiti hatası: %s", e)
+            else:
+                vehicle_detections = self._cached_vehicle_detections
+                assigned_ids = self._cached_assigned_ids
 
         # 5. Durumu güncelle
         updates = []
@@ -255,6 +280,7 @@ class Pipeline:
             self._latest_vehicle_count = (
                 len(vehicle_detections) if self._vehicle_detector is not None else None
             )
+            self._display_version += 1
 
         logger.debug(
             "Frame işlendi: %d slot, infer=%.1fms",

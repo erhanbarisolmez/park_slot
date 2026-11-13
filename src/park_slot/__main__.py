@@ -14,6 +14,22 @@ Bu dosya tüm parçaları bir araya getirir:
 6. Ctrl+C ile düzgün kapat
 """
 
+import os
+
+# MKL/oneDNN, OpenBLAS ve NumExpr kendi thread havuzlarını bu env
+# değişkenlerinden okur - native kütüphaneler import edilmeden ÖNCE set
+# edilmesi gerekiyor, sonradan os.environ'a yazmak etkisiz kalır (bkz.
+# torch/cv2 thread pinlemesiyle aynı gerekçe, settings.get_cpu_thread_limit
+# docstring'i). get_cpu_thread_limit() burada torch/cv2 import edilmeden
+# çağrılabilir çünkü settings.py onları import etmiyor.
+from park_slot.settings import get_cpu_thread_limit, load_settings
+
+_cpu_threads_env = str(get_cpu_thread_limit())
+os.environ.setdefault("OMP_NUM_THREADS", _cpu_threads_env)
+os.environ.setdefault("MKL_NUM_THREADS", _cpu_threads_env)
+os.environ.setdefault("OPENBLAS_NUM_THREADS", _cpu_threads_env)
+os.environ.setdefault("NUMEXPR_NUM_THREADS", _cpu_threads_env)
+
 import argparse
 import logging
 import logging.config
@@ -37,7 +53,6 @@ from park_slot.services.mqtt_publisher import MqttPublisher
 from park_slot.services.prediction_log import PredictionLog
 from park_slot.services.slot_manager import SlotManager
 from park_slot.services.state_store import StateStore
-from park_slot.settings import get_cpu_thread_limit, load_settings
 from park_slot.utils.signal import ShutdownHandler
 
 logger = logging.getLogger(__name__)
@@ -142,6 +157,7 @@ def main():
         frame_interval=settings.capture.frame_interval,
         show_window=args.show_window,
         vehicle_detector=vehicle_detector,
+        vehicle_detector_interval=settings.detector.interval,
     )
 
     # Graceful shutdown

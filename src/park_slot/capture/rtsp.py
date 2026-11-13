@@ -14,6 +14,8 @@ import re
 import cv2
 import numpy as np
 
+from park_slot.settings import get_cpu_thread_limit
+
 logger = logging.getLogger(__name__)
 
 _CREDENTIALS_RE = re.compile(r"://[^@/]+@")
@@ -33,6 +35,9 @@ class RTSPSource:
 
     def open(self) -> None:
         self._cap = cv2.VideoCapture(self._url)
+        # FFmpeg decode thread'leri cv2.setNumThreads()/CPU_LIMIT'ten
+        # bağımsız, host'un tüm çekirdeklerine göre default'lanır.
+        self._cap.set(cv2.CAP_PROP_N_THREADS, get_cpu_thread_limit())
         if not self._cap.isOpened():
             raise RuntimeError(f"RTSP bağlantısı açılamadı: {_mask_credentials(self._url)}")
         logger.info("RTSP bağlantısı kuruldu: %s", _mask_credentials(self._url))
