@@ -1,5 +1,4 @@
 name: Build and push image
-
 on:
   workflow_dispatch: {}
   push:
@@ -13,23 +12,19 @@ on:
       - "data/models_cam2/**"
       - "data/models_cam3/**"
       - "requirements.txt"
-
 permissions:
   contents: write
   packages: write
-
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -37,7 +32,6 @@ jobs:
           tags: |
             ghcr.io/erhanbarisolmez/park_slot:latest
             ghcr.io/erhanbarisolmez/park_slot:${{ github.sha }}
-
       - name: Bump image tag in k8s manifests (ArgoCD auto-sync tetikler)
         run: |
           sed -i "s|image: ghcr.io/erhanbarisolmez/park_slot:.*|image: ghcr.io/erhanbarisolmez/park_slot:${{ github.sha }}|" k8s/cam1.yaml k8s/cam2.yaml k8s/cam3.yaml
