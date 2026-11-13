@@ -17,6 +17,10 @@ spec:
       labels:
         app: park-slot
         camera: cam3
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8002"
+        prometheus.io/path: "/metrics"
     spec:
       nodeSelector:
         hardware: highmem
