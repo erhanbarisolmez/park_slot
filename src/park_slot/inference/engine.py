@@ -16,6 +16,7 @@ import torch
 
 from park_slot.model.cnn import ParkSlotCNN
 from park_slot.annotation.schema import SlotStatus
+from park_slot.settings import get_cpu_thread_limit
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,14 @@ class InferenceEngine:
         """ONNX model yükle."""
         import onnxruntime as ort
 
-        self._ort_session = ort.InferenceSession(str(path))
+        # Varsayılanda ORT kendi intra/inter-op thread pool'unu host'un TÜM
+        # çekirdeklerine göre açar, container'ın cgroup CPU limitini bilmez
+        # (bkz. settings.get_cpu_thread_limit docstring'i) - bu da torch/cv2
+        # pinlenmiş olsa bile throttle'a sebep oluyordu.
+        opts = ort.SessionOptions()
+        opts.intra_op_num_threads = get_cpu_thread_limit()
+        opts.inter_op_num_threads = 1
+        self._ort_session = ort.InferenceSession(str(path), sess_options=opts)
         logger.info("ONNX model yüklendi: %s", path)
 
     def predict_batch(
