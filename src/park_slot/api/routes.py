@@ -7,6 +7,7 @@ Endpoint'ler:
 - GET /api/v1/slots/{id} → Tek bir slot'un durumu
 - GET /api/v1/quality  → Proxy kalite/drift sinyalleri (flip rate, unknown rate, güven)
 - GET /live/frame.jpg  → Overlay çizilmiş son kare (tek JPEG)
+- GET /metrics         → Prometheus exposition formatında metrikler
 - POST /api/v1/slots/click → Tıklanan piksel koordinatındaki slotu bul
 - POST /api/v1/slots/{id}/override → Slotu operatör kararı olarak sabitle
 - DELETE /api/v1/slots/{id}/override → Sabitlemeyi kaldır
@@ -15,6 +16,7 @@ Endpoint'ler:
 import cv2
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
+from prometheus_client import CollectorRegistry, Gauge, Info, generate_latest, CONTENT_TYPE_LATEST
 
 from park_slot.api.models import (
     HealthResponse,
@@ -31,6 +33,38 @@ from park_slot.services.prediction_log import PredictionLog
 from park_slot.services.state_store import StateStore
 
 router = APIRouter()
+
+# Cluster'da zaten Prometheus/Grafana çalışıyor (observability namespace) ama
+# park_slot'un kendi metrikleri hiç scrape edilmiyordu. Ayrı bir registry
+# kullanılıyor (global REGISTRY değil) ki testlerde create_app() birden
+# fazla çağrılınca "Duplicated timeseries" hatası almayalım - metrikler modül
+# yüklenirken BİR KERE register edilir, /metrics her çağrıldığında sadece
+# değerleri güncellenir (zaten var olan Monitor/PredictionLog/Pipeline
+# hesaplamalarından - yeni bir ölçüm mekanizması eklemiyor).
+_METRICS_REGISTRY = CollectorRegistry()
+_METRIC_MODEL_INFO = Info(
+    "park_slot_model", "Çalışan model checkpoint/ONNX bilgisi", registry=_METRICS_REGISTRY
+)
+_METRIC_PIPELINE_RUNNING = Gauge(
+    "park_slot_pipeline_running", "Pipeline çalışıyor mu (1/0)", registry=_METRICS_REGISTRY
+)
+_METRIC_FPS = Gauge("park_slot_fps", "Pipeline FPS", registry=_METRICS_REGISTRY)
+_METRIC_INFERENCE_MS = Gauge(
+    "park_slot_inference_latency_ms", "Ortalama inference gecikmesi (ms)", registry=_METRICS_REGISTRY
+)
+_METRIC_VEHICLE_COUNT = Gauge(
+    "park_slot_detected_vehicle_count", "Dedektörün ham araç sayısı", registry=_METRICS_REGISTRY
+)
+_METRIC_FLIP_RATE = Gauge(
+    "park_slot_flip_rate_per_hour", "Saatlik slot durum değişim oranı (proxy drift sinyali)",
+    registry=_METRICS_REGISTRY,
+)
+_METRIC_UNKNOWN_RATE = Gauge(
+    "park_slot_unknown_rate", "UNKNOWN tahmin oranı (proxy drift sinyali)", registry=_METRICS_REGISTRY
+)
+_METRIC_AVG_CONFIDENCE = Gauge(
+    "park_slot_avg_confidence", "Ortalama tahmin güveni", registry=_METRICS_REGISTRY
+)
 
 # Bu değişkenler app.py'de set edilir
 _state_store: StateStore | None = None
@@ -72,6 +106,7 @@ def health():
         fps=stats.get("fps", 0),
         avg_inference_ms=stats.get("avg_inference_time_ms", 0),
         detected_vehicle_count=_pipeline.get_vehicle_count() if _pipeline else None,
+        model_version=_pipeline.get_model_version() if _pipeline else None,
     )
 
 
@@ -177,6 +212,32 @@ def get_quality(window_seconds: float = 3600.0):
         raise HTTPException(status_code=503, detail="Tahmin günlüğü etkin değil")
 
     return QualityResponse(**_prediction_log.get_quality_metrics(window_seconds))
+
+
+@router.get("/metrics")
+def metrics():
+    """Prometheus exposition formatı - cluster'daki mevcut Prometheus/Grafana
+    bu endpoint'i scrape edebilir (bkz. modül başındaki registry yorumu)."""
+    stats = _monitor.get_stats() if _monitor else {}
+    _METRIC_PIPELINE_RUNNING.set(1 if _pipeline_running else 0)
+    _METRIC_FPS.set(stats.get("fps", 0))
+    _METRIC_INFERENCE_MS.set(stats.get("avg_inference_time_ms", 0))
+
+    vehicle_count = _pipeline.get_vehicle_count() if _pipeline else None
+    _METRIC_VEHICLE_COUNT.set(vehicle_count if vehicle_count is not None else 0)
+
+    model_version = _pipeline.get_model_version() if _pipeline else None
+    _METRIC_MODEL_INFO.info({"version": model_version or "unknown"})
+
+    if _prediction_log is not None:
+        quality = _prediction_log.get_quality_metrics()
+        _METRIC_FLIP_RATE.set(quality.get("flip_rate_per_hour", 0))
+        _METRIC_UNKNOWN_RATE.set(quality.get("unknown_rate", 0))
+        _METRIC_AVG_CONFIDENCE.set(quality.get("avg_confidence", 0))
+
+    return Response(
+        content=generate_latest(_METRICS_REGISTRY), media_type=CONTENT_TYPE_LATEST
+    )
 
 
 # (version, jpeg_bytes) - pipeline frame_interval=1.5s'de bir yeni kare

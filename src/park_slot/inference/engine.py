@@ -8,6 +8,7 @@ Neden batch (toplu) inference:
 Bu modül hem PyTorch hem ONNX backend destekler.
 """
 
+import datetime
 import logging
 from pathlib import Path
 
@@ -42,13 +43,32 @@ class InferenceEngine:
         self._threshold = confidence_threshold
         self._model: ParkSlotCNN | None = None
         self._ort_session = None
+        self._model_version: str | None = None
 
         if onnx_path and Path(onnx_path).exists():
             self._load_onnx(onnx_path)
+            self._model_version = self._compute_model_version(onnx_path)
         elif checkpoint_path and Path(checkpoint_path).exists():
             self._load_pytorch(checkpoint_path)
+            self._model_version = self._compute_model_version(checkpoint_path)
         else:
             raise FileNotFoundError("Model dosyası bulunamadı (pth veya onnx)")
+
+    @staticmethod
+    def _compute_model_version(path: str | Path) -> str:
+        """Dosya adı + değişiklik zamanından basit bir versiyon kimliği.
+
+        Gerçek bir model registry yok - bu sadece "hangi pod hangi checkpoint'i
+        çalıştırıyor" sorusunu /health üzerinden cevaplamak için, bkz. MLOps
+        notu (model versioning).
+        """
+        p = Path(path)
+        mtime = datetime.datetime.fromtimestamp(p.stat().st_mtime, tz=datetime.timezone.utc)
+        return f"{p.name}@{mtime.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+
+    @property
+    def model_version(self) -> str | None:
+        return self._model_version
 
     def _load_pytorch(self, path: str | Path) -> None:
         """PyTorch checkpoint yükle."""

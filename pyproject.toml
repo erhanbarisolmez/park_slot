@@ -21,6 +21,7 @@ dependencies = [
     "onnx>=1.14",
     "onnxruntime>=1.15",
     "yt-dlp>=2024.1",
+    "prometheus-client>=0.20",
 ]
 
 [project.optional-dependencies]

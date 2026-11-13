@@ -149,6 +149,10 @@ class Pipeline:
         with self._display_lock:
             return self._latest_display
 
+    def get_model_version(self) -> str | None:
+        """Çalışan modelin versiyon kimliği (dosya adı + mtime) - bkz. InferenceEngine.model_version."""
+        return self._engine.model_version
+
     def get_display_version(self) -> int:
         """Son display frame'in versiyonu (değişmediyse çağıran taraf cache'ini kullanabilir)."""
         with self._display_lock:

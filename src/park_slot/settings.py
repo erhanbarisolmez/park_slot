@@ -59,11 +59,6 @@ class ApiConfig(BaseModel):
     cors_origins: List[str] = ["*"]
 
 
-class LoggingConfig(BaseModel):
-    level: str = "INFO"
-    format: str = "json"
-
-
 class MqttConfig(BaseModel):
     """selfpark-backend'e kamera doluluk verisi yayınlamak için MQTT ayarları.
 
@@ -85,7 +80,6 @@ class Settings(BaseSettings):
     training: TrainingConfig = TrainingConfig()
     inference: InferenceConfig = InferenceConfig()
     api: ApiConfig = ApiConfig()
-    logging: LoggingConfig = LoggingConfig()
     mqtt: MqttConfig = MqttConfig()
 
 

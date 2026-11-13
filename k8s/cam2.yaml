@@ -60,8 +60,13 @@ spec:
       volumes:
         - name: logs
           emptyDir: {}
+        # PredictionLog'un JSONL'i (quality/drift metrikleri) burada - emptyDir
+        # pod restart/reschedule'da kaybolur, hostPath ile node'da kalıcı
+        # olur (nodeSelector: hardware=highmem ile zaten tek node'a sabit).
         - name: data-logs
-          emptyDir: {}
+          hostPath:
+            path: /var/lib/park-slot/cam2/logs
+            type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service

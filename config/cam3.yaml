@@ -32,9 +32,6 @@ api:
   host: "0.0.0.0"
   port: 8002
   cors_origins: ["*"]
-logging:
-  level: "INFO"
-  format: "json"
 # selfpark-backend'e MQTT yayını (camera_code backend'de önceden kayıtlı olmalı)
 mqtt:
   enabled: false

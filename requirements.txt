@@ -13,4 +13,5 @@ onnx>=1.14
 onnxruntime>=1.15
 yt-dlp>=2024.1
 paho-mqtt>=2.0
+prometheus-client>=0.20
 

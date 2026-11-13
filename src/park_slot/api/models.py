@@ -22,6 +22,8 @@ class HealthResponse(BaseModel):
     # Dedektörün slot'tan BAĞIMSIZ ham araç sayısı (detector kapalıysa null) -
     # bkz. inference/pipeline.py Pipeline.get_vehicle_count
     detected_vehicle_count: int | None = None
+    # Hangi checkpoint/ONNX dosyası çalışıyor - bkz. InferenceEngine.model_version
+    model_version: str | None = None
 
 
 class StatusResponse(BaseModel):
