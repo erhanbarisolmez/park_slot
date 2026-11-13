@@ -22,7 +22,7 @@ spec:
         hardware: highmem
       containers:
         - name: park-slot
-          image: ghcr.io/erhanbarisolmez/park_slot:b5618b6e28874120fb65155d4f2c8c0bbd5986ee
+          image: ghcr.io/erhanbarisolmez/park_slot:d30425d689ea5047550d448e832f1764b6ef7750
           imagePullPolicy: Always
           args: ["--config", "config/cam3.yaml", "--slots", "config/slots/cam3.json"]
           ports:
