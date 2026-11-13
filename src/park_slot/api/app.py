@@ -150,10 +150,43 @@ _LIVE_PAGE = """<!doctype html>
   #panel .b-empty { background:#27ae60; }
   #panel .b-auto { background:#555; }
   #panel .b-cancel { background:#333; color:#999; }
+  #override-warning {
+    display:none; max-width:95vw; margin-bottom:10px; padding:8px 14px;
+    background:#7a4a00; border:1px solid #c98a1f; border-radius:4px;
+    font-size:13px; color:#ffe0a3;
+  }
+  #override-warning button.warn-slot-btn {
+    margin:2px 4px; padding:3px 8px; border:1px solid #ffb700; border-radius:4px;
+    background:#9c6300; color:#ffe0a3; font-size:12px; cursor:pointer;
+  }
+  #pending-modal {
+    display:none; position:fixed; inset:0; background:rgba(0,0,0,.7);
+    z-index:20; align-items:center; justify-content:center;
+  }
+  #pending-modal .modal-box {
+    background:#222; border:1px solid #555; border-radius:6px; padding:14px;
+    max-width:90vw; max-height:85vh; overflow-y:auto;
+  }
+  #pending-modal .modal-header {
+    display:flex; justify-content:space-between; align-items:center;
+    margin-bottom:10px; font-size:14px; color:#ddd;
+  }
+  #pending-modal .modal-header button {
+    background:none; border:none; color:#ccc; font-size:20px; cursor:pointer; line-height:1;
+  }
+  #modal-grid { display:flex; flex-wrap:wrap; gap:10px; }
+  .thumb-cell { display:flex; flex-direction:column; align-items:center; width:140px; }
+  .thumb-cell img { width:140px; height:140px; object-fit:cover; border:1px solid #444; border-radius:4px; }
+  .thumb-cell .thumb-label { font-size:11px; color:#999; margin-top:3px; }
+  .thumb-cell button.thumb-delete {
+    margin-top:4px; padding:3px 10px; border:none; border-radius:4px;
+    background:#c0392b; color:#fff; font-size:12px; cursor:pointer;
+  }
 </style>
 </head>
 <body>
   <h1>ParkSlot - Canlı Görüntü (yeşil=boş, kırmızı=dolu, sarı=belirsiz, beyaz çerçeve=operatör sabitlemesi)<br>Bir slota tıklayarak durumunu elle değiştirebilirsiniz.</h1>
+  <div id="override-warning"></div>
   <div id="wrap">
     <img id="cam" src="/live/frame.jpg" alt="canlı görüntü">
   </div>
@@ -167,6 +200,16 @@ _LIVE_PAGE = """<!doctype html>
     <button class="b-cancel" id="btn-cancel">İptal</button>
     <div style="font-size:10px;color:#777;margin-top:4px;max-width:140px;">
       Not: model 30sn kesintisiz aksini söylerse sabitleme otomatik kalkar.
+    </div>
+  </div>
+
+  <div id="pending-modal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <span id="modal-title"></span>
+        <button id="modal-close">×</button>
+      </div>
+      <div id="modal-grid"></div>
     </div>
   </div>
 
@@ -197,6 +240,105 @@ function startAutoRefresh() {
   if (refreshTimer) clearInterval(refreshTimer);
   refreshTimer = setInterval(refresh, 500);
 }
+
+// Bir slotta onay bekleyen (henüz review_overrides.py/web arayüzünden
+// incelenmemiş) override birikirse, bu genelde tek seferlik bir operatör
+// hatası değil, modelin o bölgede SÜREKLİ yanıldığı kalıcı bir sorunu
+// işaret eder - burada uyarıp tıklandığında görselleri gösteriyoruz.
+// Kare refresh'inden (500ms) daha seyrek kontrol ediliyor, kritik değil.
+const warningBox = document.getElementById("override-warning");
+const pendingModal = document.getElementById("pending-modal");
+const modalTitle = document.getElementById("modal-title");
+const modalGrid = document.getElementById("modal-grid");
+
+async function checkPendingOverrides() {
+  try {
+    const res = await fetch("/api/v1/pending-overrides");
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.over_threshold.length === 0) {
+      warningBox.style.display = "none";
+      warningBox.innerHTML = "";
+      return;
+    }
+    warningBox.innerHTML =
+      `⚠ Eşik (${data.threshold}) aşıldı, model şu slotlarda sürekli yanılıyor olabilir - ` +
+      `incelemek için tıklayın: `;
+    for (const slotId of data.over_threshold) {
+      const btn = document.createElement("button");
+      btn.className = "warn-slot-btn";
+      btn.textContent = `Slot ${slotId} (${data.per_slot[slotId]})`;
+      btn.addEventListener("click", () => openPendingModal(slotId));
+      warningBox.appendChild(btn);
+    }
+    warningBox.style.display = "block";
+  } catch (e) { /* sessizce yoksay - sadece bilgilendirme amaçlı */ }
+}
+
+setInterval(checkPendingOverrides, 15000);
+checkPendingOverrides();
+
+async function openPendingModal(slotId) {
+  modalTitle.textContent = `Slot ${slotId} - onay bekleyen görseller`;
+  modalGrid.innerHTML = "yükleniyor...";
+  pendingModal.style.display = "flex";
+
+  try {
+    const res = await fetch(`/api/v1/pending-overrides/${slotId}/images`);
+    if (!res.ok) { modalGrid.textContent = "yüklenemedi."; return; }
+    const data = await res.json();
+    renderPendingImages(slotId, data.images);
+  } catch (e) {
+    modalGrid.textContent = "yüklenemedi.";
+  }
+}
+
+function renderPendingImages(slotId, images) {
+  modalGrid.innerHTML = "";
+  if (images.length === 0) {
+    modalGrid.textContent = "Onay bekleyen görsel yok (hepsi silinmiş/onaylanmış olabilir).";
+    return;
+  }
+  for (const image of images) {
+    const cell = document.createElement("div");
+    cell.className = "thumb-cell";
+
+    const imgEl = document.createElement("img");
+    imgEl.src = `/api/v1/pending-overrides/${slotId}/images/${image.label}/${image.filename}`;
+    cell.appendChild(imgEl);
+
+    const labelEl = document.createElement("div");
+    labelEl.className = "thumb-label";
+    labelEl.textContent = image.label === "occupied" ? "dolu" : "boş";
+    cell.appendChild(labelEl);
+
+    const delBtn = document.createElement("button");
+    delBtn.className = "thumb-delete";
+    delBtn.textContent = "Sil";
+    delBtn.addEventListener("click", async () => {
+      delBtn.disabled = true;
+      await fetch(
+        `/api/v1/pending-overrides/${slotId}/images/${image.label}/${image.filename}`,
+        { method: "DELETE" },
+      );
+      cell.remove();
+      if (modalGrid.children.length === 0) {
+        modalGrid.textContent = "Onay bekleyen görsel yok.";
+      }
+      checkPendingOverrides(); // banner'daki sayıyı güncelle
+    });
+    cell.appendChild(delBtn);
+
+    modalGrid.appendChild(cell);
+  }
+}
+
+document.getElementById("modal-close").addEventListener("click", () => {
+  pendingModal.style.display = "none";
+});
+pendingModal.addEventListener("click", (ev) => {
+  if (ev.target === pendingModal) pendingModal.style.display = "none";
+});
 
 function hidePanel() {
   panel.style.display = "none";

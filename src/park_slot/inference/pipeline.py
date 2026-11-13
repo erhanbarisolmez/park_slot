@@ -14,7 +14,6 @@ API ve WebSocket ana thread'den durumu okur.
 import logging
 import threading
 import time
-from pathlib import Path
 
 import cv2
 import numpy as np
@@ -25,6 +24,13 @@ from park_slot.inference.engine import InferenceEngine
 from park_slot.inference.overlay import draw_overlay
 from park_slot.inference.vehicle_detector import VehicleDetector, assign_to_slots
 from park_slot.services.monitor import Monitor
+from park_slot.services.override_review import (
+    count_pending_by_slot,
+    list_pending_for_slot,
+    pending_dir_for,
+    reject,
+    resolve_pending_image,
+)
 from park_slot.services.slot_manager import SlotManager
 from park_slot.services.state_store import StateStore
 from park_slot.utils.image import crop_polygon_warped, equalize_lighting
@@ -175,6 +181,11 @@ class Pipeline:
 
         UNKNOWN için kaydetmiyoruz - geçerli bir eğitim etiketi değil
         (collector.py de sadece empty/occupied destekliyor).
+
+        Veri güvenliği: doğrudan asıl eğitim klasörüne DEĞİL, bir "pending"
+        (onay bekleyen) alt klasöre yazılır. Operatör yanlış tıklayabilir -
+        gözden geçirilmeden eğitim setine girmesin diye tools/review_overrides.py
+        ile elle onaylanana kadar burada bekler (bkz. o modülün docstring'i).
         """
         if status not in (SlotStatus.EMPTY, SlotStatus.OCCUPIED):
             return False
@@ -198,15 +209,41 @@ class Pipeline:
                 equalized, slot_def.polygon, self._slot_manager.input_size
             )
             label = "empty" if status == SlotStatus.EMPTY else "occupied"
-            out_dir = Path(f"data/labeled_{self._slot_manager.camera_id}") / label
+            out_dir = pending_dir_for(self._slot_manager.camera_id) / label
             out_dir.mkdir(parents=True, exist_ok=True)
             filename = f"slot{slot_id}_{int(time.time() * 1000)}.jpg"
             cv2.imwrite(str(out_dir / filename), cropped)
-            logger.info("Override eğitim verisi olarak kaydedildi: %s", out_dir / filename)
+            logger.info("Override onay bekleyen veri olarak kaydedildi: %s", out_dir / filename)
             return True
         except Exception as e:
             logger.error("Override label kaydedilemedi (slot %d): %s", slot_id, e)
             return False
+
+    def get_pending_override_counts(self) -> dict[int, int]:
+        """Her slot için onay bekleyen (henüz review_overrides.py ile
+        onaylanmamış) override görüntüsü sayısı - bkz. services/override_review.py."""
+        return count_pending_by_slot(self._slot_manager.camera_id)
+
+    def list_pending_overrides_for_slot(self, slot_id: int) -> list[tuple[str, str]]:
+        """Bir slota ait onay bekleyen görüntüler - [(label, filename), ...].
+
+        /live sayfasındaki uyarı banner'ına tıklandığında gösterilecek
+        görsel listesi için (bkz. api/routes.py pending-overrides/images).
+        """
+        pairs = list_pending_for_slot(self._slot_manager.camera_id, slot_id)
+        return [(label, path.name) for label, path in pairs]
+
+    def resolve_pending_override_image(self, slot_id: int, label: str, filename: str):
+        """Bir pending görüntünün gerçek dosya yolunu güvenli şekilde çöz (yoksa None)."""
+        return resolve_pending_image(self._slot_manager.camera_id, slot_id, label, filename)
+
+    def delete_pending_override_image(self, slot_id: int, label: str, filename: str) -> bool:
+        """Web arayüzünden tek bir pending görüntüyü sil (operatör hatalı/gereksiz bulduysa)."""
+        path = self.resolve_pending_override_image(slot_id, label, filename)
+        if path is None:
+            return False
+        reject(path)
+        return True
 
     def get_vehicle_count(self) -> int | None:
         """Dedektörün slot'tan BAĞIMSIZ, ham araç sayısı (detector kapalıysa None).

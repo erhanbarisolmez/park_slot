@@ -56,7 +56,11 @@ def test_save_override_label_writes_training_image(tmp_path, monkeypatch):
     ok = pipeline.save_override_label(slot_id, SlotStatus.OCCUPIED)
 
     assert ok is True
-    saved = list((tmp_path / f"data/labeled_{pipeline._slot_manager.camera_id}" / "occupied").glob("*.jpg"))
+    # Doğrudan eğitim setine değil, onay bekleyen "pending" klasörüne yazılır
+    # (bkz. tools/review_overrides.py) - veri güvenliği için.
+    saved = list(
+        (tmp_path / f"data/labeled_{pipeline._slot_manager.camera_id}" / "pending" / "occupied").glob("*.jpg")
+    )
     assert len(saved) == 1
 
 
@@ -82,3 +86,42 @@ def test_save_override_label_no_frame_yet(tmp_path, monkeypatch):
     ok = pipeline.save_override_label(slot_id, SlotStatus.EMPTY)
 
     assert ok is False
+
+
+def test_get_pending_override_counts_reflects_saved_labels(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    pipeline = make_pipeline()
+    slot_id = pipeline._slot_manager.slots[0].id
+    pipeline._latest_raw_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+    pipeline.save_override_label(slot_id, SlotStatus.OCCUPIED)
+    pipeline.save_override_label(slot_id, SlotStatus.EMPTY)
+
+    counts = pipeline.get_pending_override_counts()
+
+    assert counts == {slot_id: 2}
+
+
+def test_list_and_delete_pending_override_image(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    pipeline = make_pipeline()
+    slot_id = pipeline._slot_manager.slots[0].id
+    pipeline._latest_raw_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    pipeline.save_override_label(slot_id, SlotStatus.OCCUPIED)
+
+    images = pipeline.list_pending_overrides_for_slot(slot_id)
+    assert len(images) == 1
+    label, filename = images[0]
+    assert label == "occupied"
+
+    resolved = pipeline.resolve_pending_override_image(slot_id, label, filename)
+    assert resolved is not None and resolved.exists()
+
+    deleted = pipeline.delete_pending_override_image(slot_id, label, filename)
+    assert deleted is True
+    assert pipeline.list_pending_overrides_for_slot(slot_id) == []
+
+    # İkinci silme artık dosya yok, False dönmeli (hata fırlatmamalı).
+    assert pipeline.delete_pending_override_image(slot_id, label, filename) is False

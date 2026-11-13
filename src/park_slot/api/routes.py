@@ -6,6 +6,10 @@ Endpoint'ler:
 - GET /api/v1/slots    → Tüm slotların detaylı durumu
 - GET /api/v1/slots/{id} → Tek bir slot'un durumu
 - GET /api/v1/quality  → Proxy kalite/drift sinyalleri (flip rate, unknown rate, güven)
+- GET /api/v1/pending-overrides → Slot başına onay bekleyen override sayısı
+- GET /api/v1/pending-overrides/{slot_id}/images → Bir slota ait onay bekleyen görüntülerin listesi
+- GET /api/v1/pending-overrides/{slot_id}/images/{label}/{filename} → Tek bir görüntünün JPEG içeriği
+- DELETE /api/v1/pending-overrides/{slot_id}/images/{label}/{filename} → Onay bekleyen görüntüyü sil
 - GET /live/frame.jpg  → Overlay çizilmiş son kare (tek JPEG)
 - GET /metrics         → Prometheus exposition formatında metrikler
 - POST /api/v1/slots/click → Tıklanan piksel koordinatındaki slotu bul
@@ -20,6 +24,9 @@ from prometheus_client import CollectorRegistry, Gauge, Info, generate_latest, C
 
 from park_slot.api.models import (
     HealthResponse,
+    PendingOverrideImage,
+    PendingOverrideImagesResponse,
+    PendingOverridesResponse,
     QualityResponse,
     SlotClickRequest,
     SlotClickResponse,
@@ -64,6 +71,11 @@ _METRIC_UNKNOWN_RATE = Gauge(
 )
 _METRIC_AVG_CONFIDENCE = Gauge(
     "park_slot_avg_confidence", "Ortalama tahmin güveni", registry=_METRICS_REGISTRY
+)
+_METRIC_PENDING_OVERRIDES_OVER_THRESHOLD = Gauge(
+    "park_slot_pending_overrides_over_threshold",
+    "Onay bekleyen override sayısı eşiği aşan slot sayısı - bkz. /api/v1/pending-overrides",
+    registry=_METRICS_REGISTRY,
 )
 
 # Bu değişkenler app.py'de set edilir
@@ -220,6 +232,72 @@ def get_quality(window_seconds: float = 3600.0):
     return QualityResponse(**_prediction_log.get_quality_metrics(window_seconds))
 
 
+# Bir slotta bu kadar onay bekleyen override birikirse, muhtemelen tek
+# seferlik bir operatör hatası değil, modelin o bölgede sürekli yanıldığı
+# kalıcı bir sorun var - /live sayfası bunu görsel olarak uyarır.
+PENDING_OVERRIDE_WARN_THRESHOLD = 20
+
+
+@router.get("/api/v1/pending-overrides", response_model=PendingOverridesResponse)
+def get_pending_overrides():
+    """Slot başına onay bekleyen override sayısı (bkz. tools/review_overrides.py)."""
+    if _pipeline is None:
+        raise HTTPException(status_code=503, detail="Pipeline hazır değil")
+
+    per_slot = _pipeline.get_pending_override_counts()
+    over_threshold = [
+        slot_id for slot_id, count in per_slot.items()
+        if count >= PENDING_OVERRIDE_WARN_THRESHOLD
+    ]
+    return PendingOverridesResponse(
+        per_slot=per_slot,
+        threshold=PENDING_OVERRIDE_WARN_THRESHOLD,
+        over_threshold=over_threshold,
+    )
+
+
+@router.get(
+    "/api/v1/pending-overrides/{slot_id}/images",
+    response_model=PendingOverrideImagesResponse,
+)
+def list_pending_override_images(slot_id: int):
+    """Bir slota ait onay bekleyen görüntülerin listesi - /live uyarı modalı için."""
+    if _pipeline is None:
+        raise HTTPException(status_code=503, detail="Pipeline hazır değil")
+
+    pairs = _pipeline.list_pending_overrides_for_slot(slot_id)
+    return PendingOverrideImagesResponse(
+        slot_id=slot_id,
+        images=[PendingOverrideImage(filename=fn, label=label) for label, fn in pairs],
+    )
+
+
+@router.get("/api/v1/pending-overrides/{slot_id}/images/{label}/{filename}")
+def get_pending_override_image(slot_id: int, label: str, filename: str):
+    """Tek bir onay bekleyen görüntünün JPEG içeriği."""
+    if _pipeline is None:
+        raise HTTPException(status_code=503, detail="Pipeline hazır değil")
+
+    path = _pipeline.resolve_pending_override_image(slot_id, label, filename)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Görsel bulunamadı")
+
+    return Response(content=path.read_bytes(), media_type="image/jpeg")
+
+
+@router.delete("/api/v1/pending-overrides/{slot_id}/images/{label}/{filename}")
+def delete_pending_override_image(slot_id: int, label: str, filename: str):
+    """Operatörün web arayüzünden hatalı/gereksiz bulduğu bir pending görüntüyü sil."""
+    if _pipeline is None:
+        raise HTTPException(status_code=503, detail="Pipeline hazır değil")
+
+    ok = _pipeline.delete_pending_override_image(slot_id, label, filename)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Görsel bulunamadı")
+
+    return {"deleted": True}
+
+
 @router.get("/metrics")
 def metrics():
     """Prometheus exposition formatı - cluster'daki mevcut Prometheus/Grafana
@@ -240,6 +318,11 @@ def metrics():
         _METRIC_FLIP_RATE.set(quality.get("flip_rate_per_hour", 0))
         _METRIC_UNKNOWN_RATE.set(quality.get("unknown_rate", 0))
         _METRIC_AVG_CONFIDENCE.set(quality.get("avg_confidence", 0))
+
+    if _pipeline is not None:
+        pending = _pipeline.get_pending_override_counts()
+        over = sum(1 for c in pending.values() if c >= PENDING_OVERRIDE_WARN_THRESHOLD)
+        _METRIC_PENDING_OVERRIDES_OVER_THRESHOLD.set(over)
 
     return Response(
         content=generate_latest(_METRICS_REGISTRY), media_type=CONTENT_TYPE_LATEST

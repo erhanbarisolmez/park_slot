@@ -84,3 +84,16 @@ def test_metrics_returns_prometheus_exposition_format():
     assert resp.status_code == 200
     assert "park_slot_model_info" in resp.text
     assert "park_slot_flip_rate_per_hour" in resp.text
+
+
+def test_pending_overrides_503_without_pipeline():
+    client = make_client()
+    resp = client.get("/api/v1/pending-overrides")
+    assert resp.status_code == 503
+
+
+def test_pending_override_images_503_without_pipeline():
+    client = make_client()
+    assert client.get("/api/v1/pending-overrides/1/images").status_code == 503
+    assert client.get("/api/v1/pending-overrides/1/images/occupied/slot1_1.jpg").status_code == 503
+    assert client.delete("/api/v1/pending-overrides/1/images/occupied/slot1_1.jpg").status_code == 503

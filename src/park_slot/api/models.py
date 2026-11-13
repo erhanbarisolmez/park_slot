@@ -75,6 +75,33 @@ class SlotQualityMetrics(BaseModel):
     avg_confidence: float
 
 
+class PendingOverridesResponse(BaseModel):
+    """GET /api/v1/pending-overrides yanıtı.
+
+    Operatör override feedback loop'unda (bkz. Pipeline.save_override_label)
+    henüz tools/review_overrides.py ile onaylanmamış görüntü sayısı, slot
+    başına. Bir slotun sayısı threshold'u aşarsa, bu genelde tek seferlik bir
+    operatör hatası değil, o slotta modelin sürekli yanıldığı (örn. kamera
+    açısı/gölge deseni) kalıcı bir sorunu işaret eder - /live sayfası bunu
+    görsel olarak uyarır.
+    """
+    per_slot: dict[int, int] = {}
+    threshold: int
+    over_threshold: list[int] = []
+
+
+class PendingOverrideImage(BaseModel):
+    """Onay bekleyen tek bir görüntü - web arayüzünün gösterip silebildiği birim."""
+    filename: str
+    label: str  # "empty" | "occupied"
+
+
+class PendingOverrideImagesResponse(BaseModel):
+    """GET /api/v1/pending-overrides/{slot_id}/images yanıtı."""
+    slot_id: int
+    images: list[PendingOverrideImage] = []
+
+
 class QualityResponse(BaseModel):
     """GET /api/v1/quality yanıtı.
 
