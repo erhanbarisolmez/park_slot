@@ -14,6 +14,7 @@ API ve WebSocket ana thread'den durumu okur.
 import logging
 import threading
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -26,6 +27,7 @@ from park_slot.inference.vehicle_detector import VehicleDetector, assign_to_slot
 from park_slot.services.monitor import Monitor
 from park_slot.services.slot_manager import SlotManager
 from park_slot.services.state_store import StateStore
+from park_slot.utils.image import crop_polygon_warped, equalize_lighting
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +68,9 @@ class Pipeline:
         self._display_lock = threading.Lock()
         self._latest_display = None
         self._latest_vehicle_count: int | None = None
+        # Overlay'siz ham kare - operatör override feedback loop'unda
+        # (bkz. save_override_label) eğitim verisi olarak kaydetmek için.
+        self._latest_raw_frame: np.ndarray | None = None
         # /live/frame.jpg her poll'da yeniden encode etmesin diye - sadece
         # burada yeni bir display frame üretildiğinde artar.
         self._display_version = 0
@@ -157,6 +162,51 @@ class Pipeline:
         """Son display frame'in versiyonu (değişmediyse çağıran taraf cache'ini kullanabilir)."""
         with self._display_lock:
             return self._display_version
+
+    def save_override_label(self, slot_id: int, status: SlotStatus) -> bool:
+        """Operatörün /live'da yaptığı override'ı eğitim verisi olarak kaydet.
+
+        Önceden bu geri bildirim hiçbir yere kaydedilmiyordu - operatör
+        "model yanlış biliyor" dediği anda, bunu düzeltecek bilgi kayboluyordu.
+        training/collector.py ile AYNI kırpma yöntemini (equalize_lighting +
+        crop_polygon_warped) kullanıp aynı dosya adlandırma düzenine
+        (slot{id}_{timestamp_ms}.jpg) yazıyoruz ki bir sonraki eğitimde bu
+        veri diğer etiketli verilerle birlikte, sorunsuz kullanılabilsin.
+
+        UNKNOWN için kaydetmiyoruz - geçerli bir eğitim etiketi değil
+        (collector.py de sadece empty/occupied destekliyor).
+        """
+        if status not in (SlotStatus.EMPTY, SlotStatus.OCCUPIED):
+            return False
+
+        with self._display_lock:
+            frame = self._latest_raw_frame
+
+        if frame is None:
+            logger.warning("Override kaydedilemedi: henüz kare yok (slot %d)", slot_id)
+            return False
+
+        slot_def = next(
+            (s for s in self._slot_manager.slots if s.id == slot_id), None
+        )
+        if slot_def is None:
+            return False
+
+        try:
+            equalized = equalize_lighting(frame)
+            cropped = crop_polygon_warped(
+                equalized, slot_def.polygon, self._slot_manager.input_size
+            )
+            label = "empty" if status == SlotStatus.EMPTY else "occupied"
+            out_dir = Path(f"data/labeled_{self._slot_manager.camera_id}") / label
+            out_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"slot{slot_id}_{int(time.time() * 1000)}.jpg"
+            cv2.imwrite(str(out_dir / filename), cropped)
+            logger.info("Override eğitim verisi olarak kaydedildi: %s", out_dir / filename)
+            return True
+        except Exception as e:
+            logger.error("Override label kaydedilemedi (slot %d): %s", slot_id, e)
+            return False
 
     def get_vehicle_count(self) -> int | None:
         """Dedektörün slot'tan BAĞIMSIZ, ham araç sayısı (detector kapalıysa None).
@@ -281,6 +331,7 @@ class Pipeline:
 
         with self._display_lock:
             self._latest_display = display
+            self._latest_raw_frame = frame
             self._latest_vehicle_count = (
                 len(vehicle_detections) if self._vehicle_detector is not None else None
             )

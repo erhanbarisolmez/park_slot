@@ -189,6 +189,12 @@ def set_slot_override(slot_id: int, body: SlotOverrideRequest):
     if slot is None:
         raise HTTPException(status_code=404, detail=f"Slot {slot_id} bulunamadı")
 
+    # Operatör düzeltmesini eğitim verisi olarak kaydet (bkz. Pipeline.
+    # save_override_label) - başarısız olsa bile override'ın kendisi
+    # (yukarıdaki asıl işlev) etkilenmesin, sadece loglanır.
+    if _pipeline is not None:
+        _pipeline.save_override_label(slot_id, body.status)
+
     return slot.model_dump()
 
 

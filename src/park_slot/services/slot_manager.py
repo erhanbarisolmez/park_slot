@@ -77,6 +77,10 @@ class SlotManager:
     def camera_id(self) -> str:
         return self._config.camera_id
 
+    @property
+    def input_size(self) -> int:
+        return self._input_size
+
     def crop_all(self, frame: np.ndarray) -> list[tuple[SlotDefinition, torch.Tensor]]:
         """Bir karedeki tüm slotları kırp ve tensor'a çevir.
 

@@ -61,6 +61,8 @@ spec:
               mountPath: /app/logs
             - name: data-logs
               mountPath: /app/data/logs
+            - name: labeled-data
+              mountPath: /app/data/labeled_cam2
       volumes:
         - name: logs
           emptyDir: {}
@@ -70,6 +72,13 @@ spec:
         - name: data-logs
           hostPath:
             path: /var/lib/park-slot/cam2/logs
+            type: DirectoryOrCreate
+        # Operatör override feedback loop'unun kaydettiği eğitim verisi
+        # (bkz. Pipeline.save_override_label) - emptyDir olsaydı restart'ta
+        # kaybolurdu, bu da C3'teki data-logs ile aynı gerekçe.
+        - name: labeled-data
+          hostPath:
+            path: /var/lib/park-slot/cam2/labeled
             type: DirectoryOrCreate
 ---
 apiVersion: v1
