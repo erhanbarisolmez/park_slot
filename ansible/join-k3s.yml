@@ -17,11 +17,37 @@
       args:
         creates: /etc/systemd/system/k3s-agent.service
 
+    - name: k3s-agent'ın K3S_URL'ini secrets.yml'deki güncel master adresiyle eşle
+      # master'ın IP'si değişirse (örn. ansible_host güncellemesi gibi) burası
+      # kurulum anındaki eski adresi worker'ın env dosyasında tutar; bu task
+      # her çalıştırmada güncel k3s_url ile senkronlar
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/system/k3s-agent.service.env
+        regexp: '^K3S_URL='
+        line: "K3S_URL={{ k3s_url }}"
+      register: k3s_url_sync
+
+    - name: K3S_URL değiştiyse k3s-agent'ı yeniden başlat
+      ansible.builtin.systemd:
+        name: k3s-agent
+        state: restarted
+      when: k3s_url_sync.changed
+
     - name: k3s-agent servisinin ayakta olduğunu doğrula
       ansible.builtin.systemd:
         name: k3s-agent
         state: started
         enabled: true
+
+    - name: Worker'ın ufw'sinde kendi LAN subnetinden k3s trafiğine izin ver
+      # IP/subnet değişirse (ansible_default_ipv4.network facts'ten canlı okunur)
+      # elle "sudo ufw allow ..." çalıştırmaya gerek kalmadan kurallar otomatik güncellenir
+      community.general.ufw:
+        rule: allow
+        from_ip: "{{ ansible_default_ipv4.network }}/24"
+        port: "{{ item.port }}"
+        proto: "{{ item.proto }}"
+      loop: "{{ k3s_firewall_ports }}"
 
 # 2. PLAY: node etiketleme işi worker cihazda değil, master'da (bu makinede)
 # kubectl ile yapılıyor - bu yüzden her task delegate_to: localhost taşıyor.
@@ -43,3 +69,19 @@
         kubectl label node {{ k3s_node_name }} hardware={{ hardware }} --overwrite
       delegate_to: localhost
       when: hardware is defined
+
+# 3. PLAY: master'ın (bu makinenin) ufw'si de worker'dan gelen k3s trafiğine
+# izin vermeli - LAN subneti değişirse (örn. master'ın kendi IP'si değişirse)
+# burası da ansible_default_ipv4.network ile otomatik güncellenir.
+- name: Master makinenin ufw kurallarını k3s trafiği için güncelle
+  hosts: localhost
+  connection: local
+  become: true
+  tasks:
+    - name: Master'ın ufw'sinde kendi LAN subnetinden k3s trafiğine izin ver
+      community.general.ufw:
+        rule: allow
+        from_ip: "{{ ansible_default_ipv4.network }}/24"
+        port: "{{ item.port }}"
+        proto: "{{ item.proto }}"
+      loop: "{{ k3s_firewall_ports }}"
