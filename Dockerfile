@@ -27,7 +27,7 @@ RUN pip install --index-url https://download.pytorch.org/whl/cpu torch torchvisi
     && pip install -r requirements-docker.txt \
     # opencv-python yerine headless sürüm: X11/GL kütüphanelerine gerek kalmaz
     && pip uninstall -y opencv-python \
-    && pip install opencv-python-headless
+    && pip install opencv-python-headless==5.0.0.93
 
 COPY pyproject.toml .
 COPY src/ src/
