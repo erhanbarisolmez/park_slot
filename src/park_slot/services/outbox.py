@@ -118,6 +118,27 @@ class Outbox:
             rows = self._conn.execute("SELECT slot_id, status FROM slot_state").fetchall()
             return {slot_id: status for slot_id, status in rows}, max_id
 
+    def read_full_state(self) -> dict[int, str]:
+        """slot_state tablosunun TAM anlık görüntüsü - outbox'taki bekleyen
+        durumdan bağımsız. Sadece restart/ilk bağlantıda BİR KEZ (ADR-001
+        snapshot, bkz. __main__.py) kullanılır; periyodik reconciliation
+        (ADR-008) bu turun kapsamı dışında."""
+        with self._lock:
+            rows = self._conn.execute("SELECT slot_id, status FROM slot_state").fetchall()
+            return {slot_id: status for slot_id, status in rows}
+
+    def read_pending_changes(self, limit: int = 200) -> list[tuple[int, int, str, Optional[str], int]]:
+        """Bekleyen outbox satırlarını id sırasıyla (id, slot_id, status,
+        prev_status, version) olarak döner - ADR-001 delta yayını için
+        OutboxWorker'ın kullandığı yol. read_pending (tam snapshot) hâlâ ayrı
+        bir yetenek olarak duruyor, artık OutboxWorker tarafından çağrılmıyor."""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT id, slot_id, status, prev_status, version FROM outbox "
+                "WHERE sent_at IS NULL ORDER BY id ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+
     def mark_sent_up_to(self, max_id: int) -> None:
         now = int(self._clock())
         with self._lock:
@@ -169,16 +190,28 @@ class OutboxWorker:
         self._thread: Optional[threading.Thread] = None
 
     def flush_once(self) -> bool:
-        """Bekleyen kayıt yoksa no-op (True). Varsa son bilinen TAM anlık
-        görüntüyü publish_raw ile göndermeyi dener; başarılı olursa o anda
-        bekleyen satırları 'gönderildi' işaretler, başarısız olursa
-        attempt_count'u artırır ve satırlar bir sonraki tick için bekler."""
-        snapshot, max_id = self._outbox.read_pending()
-        if max_id is None:
+        """ADR-001: bekleyen kayıt yoksa no-op (True). Varsa her satırı id
+        sırasıyla TEK BİR delta mesajı olarak göndermeyi dener (publish_raw/tam
+        snapshot artık burada kullanılmıyor - o sadece restart/ilk bağlantıda
+        bir kez, __main__.py'de). İlk başarısız satırda durur (sıra garantisi);
+        o noktaya kadar başarıyla gönderilenler 'gönderildi' işaretlenir,
+        kalanlar (ve bir sonraki tick'te eklenecek yeni satırlar) attempt_count
+        artırılıp bir sonraki tick'e bırakılır."""
+        rows = self._outbox.read_pending_changes()
+        if not rows:
             return True
 
-        if self._publisher.publish_raw(snapshot):
-            self._outbox.mark_sent_up_to(max_id)
+        last_sent_id = None
+        for row_id, slot_id, status, prev_status, version in rows:
+            if self._publisher.publish_slot_changed(slot_id, prev_status, status, version):
+                last_sent_id = row_id
+            else:
+                break
+
+        if last_sent_id is not None:
+            self._outbox.mark_sent_up_to(last_sent_id)
+
+        if last_sent_id == rows[-1][0]:
             return True
 
         self._outbox.record_attempt_failure()

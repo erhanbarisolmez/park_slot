@@ -19,15 +19,25 @@ def make_clock(step: float = 1.0):
 
 
 class FakePublisher:
-    """MqttPublisher'ın yerine geçen, publish_raw çağrılarını kaydeden sahte
-    publisher - FakeMqttClient.raise_on_publish'le aynı üslup."""
+    """MqttPublisher'ın yerine geçen, publish_raw/publish_slot_changed
+    çağrılarını kaydeden sahte publisher - FakeMqttClient.raise_on_publish'le
+    aynı üslup. fail_on_slot_id verilirse, sadece o slot_id'deki çağrı
+    başarısız olur (kısmi başarı senaryolarını test etmek için)."""
 
-    def __init__(self, succeed: bool = True):
+    def __init__(self, succeed: bool = True, fail_on_slot_id: int | None = None):
         self.succeed = succeed
+        self.fail_on_slot_id = fail_on_slot_id
         self.calls: list[dict] = []
+        self.slot_changed_calls: list[tuple] = []
 
     def publish_raw(self, slot_statuses: dict) -> bool:
         self.calls.append(dict(slot_statuses))
+        return self.succeed
+
+    def publish_slot_changed(self, slot_id: int, prev_status, status: str, version: int) -> bool:
+        self.slot_changed_calls.append((slot_id, prev_status, status, version))
+        if self.fail_on_slot_id is not None and slot_id == self.fail_on_slot_id:
+            return False
         return self.succeed
 
 
@@ -165,16 +175,23 @@ def test_on_slot_change_callback_records_and_swallows_errors(tmp_path):
     assert snapshot == {5: "OCCUPIED"}
 
 
-def test_flush_once_marks_sent_on_success(tmp_path):
+def test_flush_once_sends_each_pending_row_as_delta_and_marks_all_sent(tmp_path):
+    """ADR-001: flush_once artık publish_raw (tam snapshot) değil,
+    publish_slot_changed'i her bekleyen satır için ayrı ayrı çağırır."""
     outbox = Outbox(db_path=str(tmp_path / "outbox.db"))
     outbox.record_change(1, "OCCUPIED", 0.9)
+    outbox.record_change(2, "EMPTY", 0.9)
     publisher = FakePublisher(succeed=True)
     worker = OutboxWorker(outbox, publisher)
 
     result = worker.flush_once()
 
     assert result is True
-    assert publisher.calls == [{1: "OCCUPIED"}]
+    assert publisher.calls == []  # publish_raw hiç çağrılmadı
+    assert publisher.slot_changed_calls == [
+        (1, None, "OCCUPIED", 1),
+        (2, None, "EMPTY", 1),
+    ]
     assert outbox.pending_count() == 0
 
 
@@ -194,6 +211,25 @@ def test_flush_once_retries_on_failure(tmp_path):
     assert outbox.pending_count() == 0
 
 
+def test_flush_once_stops_at_first_failure_preserving_order(tmp_path):
+    """İlk başarısız satırda durulmalı - sıra garantisi için, daha sonraki
+    satırlar denenmemeli; başarıyla gönderilenler yine de 'gönderildi'
+    işaretlenmeli."""
+    outbox = Outbox(db_path=str(tmp_path / "outbox.db"))
+    outbox.record_change(1, "OCCUPIED", 0.9)
+    outbox.record_change(2, "EMPTY", 0.9)
+    outbox.record_change(3, "UNKNOWN", 0.9)
+    publisher = FakePublisher(succeed=True, fail_on_slot_id=2)
+    worker = OutboxWorker(outbox, publisher)
+
+    result = worker.flush_once()
+
+    assert result is False
+    # slot 1 gönderildi ve işaretlendi, slot 2'de durdu, slot 3 hiç denenmedi.
+    assert [c[0] for c in publisher.slot_changed_calls] == [1, 2]
+    assert outbox.pending_count() == 2  # slot 2 ve slot 3 hâlâ bekliyor
+
+
 def test_flush_once_is_noop_when_nothing_pending(tmp_path):
     outbox = Outbox(db_path=str(tmp_path / "outbox.db"))
     publisher = FakePublisher(succeed=True)
@@ -201,3 +237,33 @@ def test_flush_once_is_noop_when_nothing_pending(tmp_path):
 
     assert worker.flush_once() is True
     assert publisher.calls == []
+    assert publisher.slot_changed_calls == []
+
+
+def test_read_full_state_returns_all_slot_state_rows(tmp_path):
+    """read_full_state - outbox'ta bekleyen olup olmadığından bağımsız, TAM
+    slot_state görüntüsü (restart/ilk bağlantı snapshot'ı için, ADR-001)."""
+    outbox = Outbox(db_path=str(tmp_path / "outbox.db"))
+    outbox.record_change(1, "EMPTY", 0.9)
+    outbox.record_change(2, "OCCUPIED", 0.9)
+    _, max_id = outbox.read_pending()
+    outbox.mark_sent_up_to(max_id)  # hepsi gönderildi işaretlendi
+
+    # pending_count 0 olsa da slot_state hâlâ dolu olmalı.
+    assert outbox.pending_count() == 0
+    assert outbox.read_full_state() == {1: "EMPTY", 2: "OCCUPIED"}
+
+
+def test_read_pending_changes_returns_rows_in_id_order(tmp_path):
+    outbox = Outbox(db_path=str(tmp_path / "outbox.db"))
+    outbox.record_change(1, "EMPTY", 0.9)
+    outbox.record_change(2, "OCCUPIED", 0.9)
+    outbox.record_change(1, "OCCUPIED", 0.95)  # slot 1 version 2
+
+    rows = outbox.read_pending_changes()
+
+    assert [(slot_id, status, version) for _id, slot_id, status, _prev, version in rows] == [
+        (1, "EMPTY", 1),
+        (2, "OCCUPIED", 1),
+        (1, "OCCUPIED", 2),
+    ]

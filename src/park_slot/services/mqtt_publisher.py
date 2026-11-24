@@ -1,16 +1,22 @@
 """selfpark-backend'e kamera doluluk verisi yayınlayan MQTT publisher.
 
-PredictionLog ile aynı desen: StateStore.on_change callback zincirine katılır
-(bkz. __main__.py). Backend'in beklediği sözleşme (docs/camera/README.md,
-selfpark-backend reposu):
+ADR-001'den itibaren İKİ ayrı kanal var:
 
-    Topic:   selfpark/camera/{camera_code}/detection
-    Payload: {"slots": {"<camera_code>-<slot_id>": "EMPTY"|"OCCUPIED"|"UNKNOWN", ...}}
+1. Delta (normal akışın TAMAMI, publish_slot_changed - OutboxWorker'ın her
+   flush'ta çağırdığı tek yol):
+       Topic:   selfpark/camera/{camera_code}/slotChanged
+       Payload: {"slotId": "<camera_code>-<slot_id>", "previousStatus": str|null,
+                 "currentStatus": "EMPTY"|"OCCUPIED"|"UNKNOWN", "version": int,
+                 "timestamp": epoch-millis}
 
-UNKNOWN de dahil TÜM slotlar her yayında gönderilir - backend artık 3 durumu
-da ayırt ediyor (boolean sözleşmesi kaldırıldı). Koordinat/layout bilgisi bu
-akışın parçası değildir; o, tools/register_slot_layout.py ile bir kez ayrı
-kaydedilir (bkz. o dosyanın docstring'i).
+2. Snapshot (sadece restart/ilk bağlantıda BİR KEZ, publish_raw/publish -
+   __main__.py'de outbox.read_full_state() ile çağrılır, ADR-008/periyodik
+   reconciliation Aşama 4'e bırakıldı):
+       Topic:   selfpark/camera/{camera_code}/detection
+       Payload: {"slots": {"<camera_code>-<slot_id>": "EMPTY"|"OCCUPIED"|"UNKNOWN", ...}}
+
+Koordinat/layout bilgisi bu akışın parçası değildir; o, tools/register_slot_layout.py
+ile bir kez ayrı kaydedilir (bkz. o dosyanın docstring'i).
 
 Slot key'leri camera_code ile prefixlenir ("CAM-001-1", "CAM-002-1", ...):
 backend tarafında park_slot_occupancy tek bir parkı (park_info_id) temsil
@@ -26,6 +32,7 @@ pipeline'ı asla durdurmaz, sadece loglanır.
 import json
 import logging
 import threading
+import time
 from typing import Optional
 
 from park_slot.annotation.schema import ParkingStatus, SlotState
@@ -131,4 +138,33 @@ class MqttPublisher:
 
         with self._lock:
             self._last_payload = payload_slots
+        return True
+
+    def publish_slot_changed(
+        self, slot_id: int, prev_status: Optional[str], status: str, version: int
+    ) -> bool:
+        """ADR-001 delta kanalı - OutboxWorker'ın tek giriş noktası (normal
+        akışın tamamı buradan geçer). publish_raw (tam snapshot) ile aynı
+        best-effort/ack kontrolü (is_connected + rc); dedup YOK - her outbox
+        satırı zaten tekil bir değişikliği temsil ediyor, tekrar aynı payload
+        gelmez."""
+        if self._client is None or not self._client.is_connected():
+            return False
+
+        topic = f"selfpark/camera/{self._settings.camera_code}/slotChanged"
+        body = json.dumps({
+            "slotId": f"{self._settings.camera_code}-{slot_id}",
+            "previousStatus": prev_status,
+            "currentStatus": status,
+            "version": version,
+            "timestamp": int(time.time() * 1000),
+        })
+        try:
+            info = self._client.publish(topic, body, qos=self._settings.qos)
+            if info is not None and getattr(info, "rc", 0) != 0:
+                logger.error("MQTT slot-changed publish başarısız (topic=%s, rc=%s)", topic, info.rc)
+                return False
+        except Exception as e:
+            logger.error("MQTT slot-changed publish başarısız (topic=%s): %s", topic, e)
+            return False
         return True

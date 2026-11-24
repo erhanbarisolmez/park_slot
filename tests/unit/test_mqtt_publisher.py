@@ -154,6 +154,59 @@ def test_publish_returns_false_on_exception():
     assert publisher.publish(make_status({1: SlotStatus.EMPTY})) is False
 
 
+def test_publish_slot_changed_sends_delta_to_slot_changed_topic():
+    """ADR-001: delta mesajı ayrı bir topic'e (.../slotChanged), tam snapshot
+    (.../detection) değil."""
+    client = FakeMqttClient()
+    publisher = MqttPublisher(make_settings(), camera_id="cam1", state_store=None, client=client)
+
+    result = publisher.publish_slot_changed(1, "EMPTY", "OCCUPIED", 3)
+
+    assert result is True
+    assert len(client.published) == 1
+    topic, payload, qos = client.published[0]
+    assert topic == "selfpark/camera/CAM-001/slotChanged"
+    assert qos == 1
+    import json
+    body = json.loads(payload)
+    assert body["slotId"] == "CAM-001-1"
+    assert body["previousStatus"] == "EMPTY"
+    assert body["currentStatus"] == "OCCUPIED"
+    assert body["version"] == 3
+    assert isinstance(body["timestamp"], int)
+
+
+def test_publish_slot_changed_returns_false_when_disconnected():
+    client = FakeMqttClient(connected=False)
+    publisher = MqttPublisher(make_settings(), camera_id="cam1", state_store=None, client=client)
+
+    result = publisher.publish_slot_changed(1, None, "EMPTY", 1)
+
+    assert result is False
+    assert len(client.published) == 0
+
+
+def test_publish_slot_changed_returns_false_on_exception():
+    client = FakeMqttClient(raise_on_publish=True)
+    publisher = MqttPublisher(make_settings(), camera_id="cam1", state_store=None, client=client)
+
+    result = publisher.publish_slot_changed(1, None, "EMPTY", 1)
+
+    assert result is False
+
+
+def test_publish_slot_changed_no_dedup_same_payload_sent_twice():
+    """Delta kanalında dedup yok - her outbox satırı tekil bir değişikliği
+    temsil ediyor, publish_raw'daki _last_payload mantığı burada uygulanmaz."""
+    client = FakeMqttClient()
+    publisher = MqttPublisher(make_settings(), camera_id="cam1", state_store=None, client=client)
+
+    publisher.publish_slot_changed(1, "EMPTY", "OCCUPIED", 3)
+    publisher.publish_slot_changed(1, "EMPTY", "OCCUPIED", 3)
+
+    assert len(client.published) == 2
+
+
 def test_on_slot_change_uses_state_store_snapshot():
     """on_slot_change, gelen tek slotu değil state_store.get_status()'un TAM snapshot'ını yayınlamalı."""
 
