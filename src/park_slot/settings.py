@@ -73,6 +73,17 @@ class MqttConfig(BaseModel):
     qos: int = 1
 
 
+class OutboxConfig(BaseModel):
+    """MQTT gönderiminin restart/broker kesintisine dayanıklı olması için
+    SQLite tabanlı outbox ayarları (bkz. docs/architecture/ADR_DOCUMENTS.md
+    ADR-004). db_path'teki {camera_code} yer tutucusu, her kameranın (ayrı OS
+    process'i) kendi dosyasına yazması için __main__.py'de doldurulur - SQLite
+    tek-writer modelinde iki process aynı dosyayı paylaşmamalı."""
+    db_path: str = "data/outbox_{camera_code}.db"
+    poll_interval: float = 5.0
+    retention_days: int = 7
+
+
 class Settings(BaseSettings):
     capture: CaptureConfig = CaptureConfig()
     model: ModelConfig = ModelConfig()
@@ -81,6 +92,7 @@ class Settings(BaseSettings):
     inference: InferenceConfig = InferenceConfig()
     api: ApiConfig = ApiConfig()
     mqtt: MqttConfig = MqttConfig()
+    outbox: OutboxConfig = OutboxConfig()
 
 
 def load_settings(config_path: Path | None = None) -> Settings:

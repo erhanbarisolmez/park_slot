@@ -8,9 +8,13 @@ from park_slot.settings import MqttConfig
 class FakeMqttClient:
     """Gerçek paho-mqtt Client'ın yerine geçen, yayınları bellekte tutan sahte client."""
 
-    def __init__(self, raise_on_publish: bool = False):
+    def __init__(self, raise_on_publish: bool = False, connected: bool = True):
         self.published: list[tuple[str, str, int]] = []
         self._raise_on_publish = raise_on_publish
+        self._connected = connected
+
+    def is_connected(self) -> bool:
+        return self._connected
 
     def publish(self, topic: str, payload: str, qos: int = 1):
         if self._raise_on_publish:
@@ -102,6 +106,52 @@ def test_publish_exception_is_swallowed():
 
     # Exception fırlatmamalı:
     publisher.publish(make_status({1: SlotStatus.EMPTY}))
+
+
+def test_failed_publish_is_retried_on_next_call():
+    """Publish başarısız olursa dedup state güncellenmemeli - aynı state bir
+    sonraki publish() çağrısında tekrar denenmeli (sessiz veri kaybı bug'ının
+    düzeltmesi: _last_payload artık yalnızca başarılı publish sonrası yazılıyor)."""
+    client = FakeMqttClient(raise_on_publish=True)
+    publisher = MqttPublisher(make_settings(), camera_id="cam1", state_store=None, client=client)
+
+    status = make_status({1: SlotStatus.EMPTY})
+    publisher.publish(status)
+    assert len(client.published) == 0
+
+    client._raise_on_publish = False
+    publisher.publish(status)
+
+    assert len(client.published) == 1
+
+
+def test_publish_raw_returns_false_when_disconnected():
+    """paho-mqtt, bağlantı koptuğunda QoS>=1'de publish()'te exception
+    fırlatmaz (sessizce kuyruklar) - bu yüzden is_connected() ÖNCEDEN
+    kontrol edilmeli; disconnected durumda hiç publish denenmemeli."""
+    client = FakeMqttClient(connected=False)
+    publisher = MqttPublisher(make_settings(), camera_id="cam1", state_store=None, client=client)
+
+    result = publisher.publish_raw({1: "EMPTY"})
+
+    assert result is False
+    assert len(client.published) == 0
+
+
+def test_publish_returns_true_on_success():
+    """publish()/publish_raw() artık bool döndürüyor - OutboxWorker'ın
+    başarı/başarısızlığı bilmesinin tek yolu bu."""
+    client = FakeMqttClient()
+    publisher = MqttPublisher(make_settings(), camera_id="cam1", state_store=None, client=client)
+
+    assert publisher.publish(make_status({1: SlotStatus.EMPTY})) is True
+
+
+def test_publish_returns_false_on_exception():
+    client = FakeMqttClient(raise_on_publish=True)
+    publisher = MqttPublisher(make_settings(), camera_id="cam1", state_store=None, client=client)
+
+    assert publisher.publish(make_status({1: SlotStatus.EMPTY})) is False
 
 
 def test_on_slot_change_uses_state_store_snapshot():

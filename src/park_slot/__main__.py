@@ -50,6 +50,7 @@ from park_slot.inference.pipeline import Pipeline
 from park_slot.inference.vehicle_detector import VehicleDetector
 from park_slot.services.monitor import Monitor
 from park_slot.services.mqtt_publisher import MqttPublisher
+from park_slot.services.outbox import Outbox, OutboxWorker
 from park_slot.services.prediction_log import PredictionLog
 from park_slot.services.slot_manager import SlotManager
 from park_slot.services.state_store import StateStore
@@ -145,7 +146,23 @@ def main():
     state_store.on_change(prediction_log.record)
 
     mqtt_publisher = MqttPublisher(settings.mqtt, camera_id=slot_manager.camera_id, state_store=state_store)
-    state_store.on_change(mqtt_publisher.on_slot_change)
+
+    # MQTT'ye giden tek yol outbox->poller'dır (Aşama 1, bkz. services/outbox.py
+    # docstring'i) - state_store'dan mqtt_publisher'a doğrudan bir canlı-publish
+    # kaydı YOK, bu yüzden MqttPublisher.on_slot_change artık burada çağrılmıyor.
+    outbox = None
+    outbox_worker = None
+    if settings.mqtt.enabled:
+        db_path = settings.outbox.db_path.format(camera_code=slot_manager.camera_id)
+        outbox = Outbox(db_path=db_path)
+        state_store.on_change(outbox.on_slot_change)
+        outbox_worker = OutboxWorker(
+            outbox,
+            mqtt_publisher,
+            poll_interval=settings.outbox.poll_interval,
+            retention_days=settings.outbox.retention_days,
+        )
+        outbox_worker.start()
 
     # Pipeline
     pipeline = Pipeline(
@@ -163,6 +180,9 @@ def main():
     # Graceful shutdown
     shutdown = ShutdownHandler()
     shutdown.register(pipeline.stop)
+    if outbox_worker is not None:
+        shutdown.register(outbox_worker.stop)
+        shutdown.register(outbox.close)
 
     # Pipeline başlat
     pipeline.start()

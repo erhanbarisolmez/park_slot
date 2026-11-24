@@ -64,10 +64,8 @@ class MqttPublisher:
                 client_id=f"park_slot_{self._camera_id}_pub",
             )
             client.connect_async(self._settings.broker_host, self._settings.broker_port)
-            # loop_start() kalıcı bir arka plan network thread'i açar - şu an
-            # tüm kamera config'lerinde mqtt.enabled=false olduğu için bu
-            # kod yolu tetiklenmiyor; enabled=true'ya çevirmek CPU_LIMIT'e
-            # pinlenmemiş yeni bir thread eklemek demek, bilinçli yapılmalı.
+            # loop_start() kalıcı bir arka plan network thread'i açar - bu,
+            # CPU_LIMIT'e pinlenmemiş bir thread eklemek demektir.
             client.loop_start()
             logger.info(
                 "MQTT publisher broker'a bağlanıyor: %s:%d (camera_code=%s)",
@@ -80,7 +78,12 @@ class MqttPublisher:
 
     def on_slot_change(self, _state: SlotState) -> None:
         """StateStore.on_change callback'i. Parametre olarak gelen tek slot
-        kullanılmaz - tetiklendiğinde kameranın TAM snapshot'ı yayınlanır."""
+        kullanılmaz - tetiklendiğinde kameranın TAM snapshot'ı yayınlanır.
+
+        NOT: Aşama 1 (SQLite outbox) ile prod wiring'de bu callback artık
+        state_store.on_change'e kaydedilmiyor - canlı publish yolu, outbox
+        poller'ın tek yetkili publish yoluna devredildi (bkz. __main__.py).
+        Metod burada kalıyor, hâlâ test kapsamında."""
         if self._client is None:
             return
         try:
@@ -88,23 +91,44 @@ class MqttPublisher:
         except Exception as e:
             logger.error("MQTT publish hazırlığı başarısız: %s", e)
 
-    def publish(self, parking_status: ParkingStatus) -> None:
-        if self._client is None:
-            return
+    def publish(self, parking_status: ParkingStatus) -> bool:
+        slot_statuses = {slot.id: slot.status.value.upper() for slot in parking_status.slots}
+        return self.publish_raw(slot_statuses)
+
+    def publish_raw(self, slot_statuses: dict) -> bool:
+        """slot_id -> status string haritasını yayınlar. OutboxWorker'ın tek
+        giriş noktası - dönüş değeri (True=başarılı, False=başarısız/atlandı)
+        outbox'ın bir kaydı 'gönderildi' işaretleyip işaretlemeyeceğini belirler.
+
+        paho-mqtt, QoS>=1'de bağlantı koptuğunda publish()'te exception
+        fırlatmaz (mesajı kendi iç kuyruğuna alır, başarısız bir rc döner) -
+        bu yüzden hem is_connected() hem dönen rc kontrol ediliyor; yalnızca
+        exception'a bakmak outbox'ı gerçekte gitmemiş bir mesajı 'gönderildi'
+        sanmaya iter ve tüm özelliğin amacını boşa çıkarır.
+        """
+        if self._client is None or not self._client.is_connected():
+            return False
 
         payload_slots = {
-            f"{self._settings.camera_code}-{slot.id}": slot.status.value.upper()
-            for slot in parking_status.slots
+            f"{self._settings.camera_code}-{sid}": status
+            for sid, status in slot_statuses.items()
         }
 
         with self._lock:
             if payload_slots == self._last_payload:
-                return
-            self._last_payload = payload_slots
+                return True
 
         topic = f"selfpark/camera/{self._settings.camera_code}/detection"
         body = json.dumps({"slots": payload_slots})
         try:
-            self._client.publish(topic, body, qos=self._settings.qos)
+            info = self._client.publish(topic, body, qos=self._settings.qos)
+            if info is not None and getattr(info, "rc", 0) != 0:
+                logger.error("MQTT publish başarısız (topic=%s, rc=%s)", topic, info.rc)
+                return False
         except Exception as e:
             logger.error("MQTT publish başarısız (topic=%s): %s", topic, e)
+            return False
+
+        with self._lock:
+            self._last_payload = payload_slots
+        return True
