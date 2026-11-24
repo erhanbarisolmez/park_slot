@@ -174,6 +174,39 @@ Doğrulandı — iddiaların hepsi kodda karşılığını buluyor:
 ✻ Cooked for 32s · done 5:20 PM
 
 ❯ şimdilik buraya kadar ki yapılacağı kaydedelim yarın devam edeceğiz sorunu da kaydet ve          
-  incelemelerinide                                                                                 
+  incelemelerinide
+
+---
+
+## 2026-11-24 ikinci oturum — Aşama 1 + Aşama 2 tamamlandı, deploy yarına kaldı
+
+Önceki oturumun kaydettiği roadmap'ten devam edildi (bkz. yukarısı). Yapılanlar,
+en güncelden en eskiye:
+
+1. **Aşama 1 (SQLite outbox)** zaten commit edilmiş bulundu (`park_slot` commit
+   `91c1e67`) — doğrulandı: 104/104 test geçiyor.
+2. **Aşama 2a (ADR-006):** `CameraDetectionMqttHandler` publish-only yapıldı,
+   yeni `CameraSlotChangeConsumer` WS broadcast'i üstlendi. Topic kategorisi
+   `STREAM`→`EVENT` (hiçbir Streams topolojisi yoktu). Partition key
+   `cameraCode`→`parkInfoId`. selfpark-backend `7c2a6bb`.
+3. **ADR-001 (delta/snapshot):** Yeni `CameraSlotChangedEvent` + topic, normal
+   akışın tamamı tek-slot delta'ya taşındı; `CameraDetectionEvent`/`.../detection`
+   artık sadece edge restart/ilk bağlantı snapshot'ı. Partition key tam
+   `parkInfoId:slotId`. Periyodik reconciliation (ADR-008) bilerek Aşama 4'e
+   bırakıldı. selfpark-backend `091f84f`, park_slot `d32b196`.
+4. **Prod'da gerçek bir bug bulundu ve düzeltildi:** `.avsc`'deki `"interfaces"`
+   alanı no-op olduğu için yeni event tipine `EventAdapterFactory` adapter'ı
+   eklenmemişti — mesajlar sonsuz retry'a giriyordu (veri kaybı yok, offset hiç
+   commit edilmemişti). `EventAdapterFactoryTest` eklendi. selfpark-backend
+   `7d2776d`.
+5. İki repo da commit+push edildi, çalışma dizini temiz.
+
+**Yarına kalan:** selfpark-backend container'ını `7d2776d` ile yeniden build
+edip (`docker compose up -d --build selfpark-backend`) başlatmak, kafka-ui'de
+`selfpark-group`'un `selfpark.mqtt.cameraSlotChanged.v1` lag'inin gerçek
+sayılarla ilerlediğini doğrulamak. Sonrasında açık kalan kararlar (önceki
+oturumdan, hâlâ cevaplanmadı): Kafka RF≥2 yükseltmesi zamanlaması,
+anomaly_detection'daki boş ML iskeletlerinin kapsamı. Roadmap detayı:
+`docs/architecture/IMPLEMENTATION_ROADMAP.md` (Aşama 2 durumu güncellendi).                                                                                 
   
 

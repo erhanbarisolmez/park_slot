@@ -28,6 +28,13 @@
 
 ## Aşama 2 — Delta/Snapshot Avro Şemaları + Backend Kafka Consumer (ADR-001, ADR-005, ADR-006)
 
+> **Durum (2026-11-24): Tamamlandı, prod'a deploy bekliyor.**
+> - **2a (ADR-006):** `CameraDetectionMqttHandler` publish-only hale getirildi, yeni `CameraSlotChangeConsumer` (`EventHandlerRegistry`'ye kayıtlı, `@KafkaListener` değil — mevcut `CentralEventConsumer`/`EventHandler<T>` mekanizması kullanıldı) WS broadcast'i üstlendi. selfpark-backend commit `7c2a6bb`.
+> - **ADR-001 (delta/snapshot):** Yeni `CameraSlotChangedEvent.avsc` + `selfpark.mqtt.cameraSlotChanged.v1` topic'i — normal akışın tamamı burada (tek slot). `CameraDetectionEvent`/`.../detection` artık SADECE edge restart/ilk bağlantı snapshot'ı için. Partition key `parkInfoId:slotId` (ADR-005 tam uygulandı). Backend commit `091f84f`, edge (park_slot) commit `d32b196`.
+> - **Prod'da bulunup düzeltilen bug (backend commit `7d2776d`):** `.avsc`'deki `"interfaces": [...Event]` alanı no-op (standart Avro syntax'ı değil) — yeni event tipi için `EventAdapterFactory`'de elle adapter eklenmemişti, mesajlar sonsuz retry'a giriyordu (DLQ'ya bile düşmüyordu, veri kaybı yoktu çünkü offset hiç commit edilmemişti). `EventAdapterFactoryTest` eklendi (bu sınıf daha önce hiç test kapsamında değildi).
+> - **Yarına kalan:** `docker compose up -d --build selfpark-backend` ile prod container'ı son commit'le (`7d2776d`) yeniden build edip başlatmak, sonra kafka-ui'de `selfpark-group`'un `selfpark.mqtt.cameraSlotChanged.v1` üzerindeki lag'inin gerçek sayılarla ilerlediğini doğrulamak (kabul kriteri aşağıda).
+> - **Bilerek kapsam dışı bırakıldı:** Periyodik reconciliation snapshot'ı (ADR-008) — Aşama 4'e not düşüldü.
+
 **Hedef:** `selfpark.mqtt.cameraDetection.v1`'in "publish-only" durumunu sonlandırmak, Kafka'yı fiilen dağıtım omurgasına dönüştürmek.
 **Bağımlılıklar:** Aşama 1 (edge'in yeni delta event'i üretebilmesi için outbox altyapısı hazır olmalı) — ancak backend tarafı (yeni consumer) Aşama 1'den bağımsız olarak, mevcut `CameraDetectionEvent` ile de test edilebilir (önce consumer eklenip mevcut event formatıyla doğrulanabilir, sonra edge yeni formata geçer). Bu nedenle 2a (backend consumer) ve 2b (edge delta formatı) paralel/bağımsız yürütülebilir.
 **Değişmesi beklenen modüller:**
