@@ -207,6 +207,49 @@ edip (`docker compose up -d --build selfpark-backend`) başlatmak, kafka-ui'de
 sayılarla ilerlediğini doğrulamak. Sonrasında açık kalan kararlar (önceki
 oturumdan, hâlâ cevaplanmadı): Kafka RF≥2 yükseltmesi zamanlaması,
 anomaly_detection'daki boş ML iskeletlerinin kapsamı. Roadmap detayı:
-`docs/architecture/IMPLEMENTATION_ROADMAP.md` (Aşama 2 durumu güncellendi).                                                                                 
+`docs/architecture/IMPLEMENTATION_ROADMAP.md` (Aşama 2 durumu güncellendi).
+
+---
+
+## 2026-11-25 oturum — Aşama 2 deploy + doğrulama tamamlandı, debounce/snapshot iyileştirmeleri
+
+Önceki oturumun "yarına kalan" maddesinden devam edildi.
+
+1. **selfpark-backend container'ı `7d2776d` ile rebuild edilip başlatıldı**
+   (`docker compose up -d --build selfpark-backend`) — build başarılı.
+2. **Kullanıcı gözlemi:** kafka-ui'de `cameraSlotChanged` mesajlarının sık
+   geldiği, `cameraDetection`'ın boş olduğu fark edildi. İnceleme:
+   - Edge'de zaten bir hysteresis/debounce vardı (`confirm_seconds=4.0`,
+     `state_store.py`) ama hardcoded ve kısa.
+   - Snapshot (`cameraDetection`) sadece process başlangıcında bir kez
+     gönderiliyordu, MQTT `on_connect`'e bağlı değildi — broker henüz
+     bağlı değilken sessizce kaybolabiliyordu (retry yok).
+3. **Düzeltmeler (park_slot commit `ae737ae`):**
+   - `confirm_seconds` artık `config/*.yaml`'dan ayarlanabiliyor, varsayılan
+     10.0s'ye çekildi (`settings.py` → `OccupancyConfig`).
+   - `MqttPublisher.enable_startup_snapshot(provider)`: snapshot artık
+     `on_connect` callback'ine bağlı — ilk bağlantı yarışını giderir, her
+     yeniden bağlanmada otomatik resync sağlar (periyodik timer DEĞİL).
+   - 113 test geçti (2 yeni test eklendi), image lokal build ile doğrulandı.
+4. **Deploy + prod doğrulama:** park_slot push edildi → CI (ghcr) → ArgoCD
+   auto-sync → cam1/2/3 pod'ları yeni image'da (`ae737ae`) `Running`.
+   Deploy geçişinde kısa süreli (ilk ~10-12s) çoklu reconnect/snapshot
+   log'u gözlendi (eski/yeni pod'un client_id çakışması, beklenen/zararsız),
+   sonra stabil.
+   - `selfpark.mqtt.cameraDetection.v1`: 0 → 3 mesaj (her kameradan bir
+     snapshot, dedup tekrarları süzdü).
+   - `selfpark-group` için her iki topic'te de **LAG=0**.
+   - `cameraSlotChanged` mesajları artık dakikalar arayla geliyor (önceki
+     "her değişiklikte gönderiyor" hissi gerçek bir spam değilmiş, ama
+     10s'ye çekilen pencere + configure edilebilirlik yine de iyileştirme).
+
+**Sonuç: Aşama 2 (ADR-001/005/006) tamamen bitti** — roadmap'teki kabul
+kriteri (Kafka topic'leri tüketiliyor, lag ilerliyor) karşılandı.
+
+**Hâlâ açık (önceki oturumlardan, cevaplanmadı):** Kafka RF≥2/çok-broker
+yükseltmesi zamanlaması, `anomaly_detection`'daki boş ML iskeletlerinin
+(`ml/`, `ml_based/`, `rule_based/`) kapsamı. Bir sonraki aşama adayı:
+Aşama 3 (slot kimliği normalizasyonu, ADR-002) veya Aşama 4
+(reconciliation + kamera watchdog, ADR-008).                                                                                 
   
 
