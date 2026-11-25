@@ -313,6 +313,11 @@ ADR-009'un ne zaman uygulanacağı (çoklu kamera kurulumu planlandığında).
 
 **Yarına/sonraya kalan:** Hâlâ açık — Kafka RF≥2 zamanlaması,
 anomaly_detection ML iskeletleri, ADR-009'un ne zaman uygulanacağı
-(çoklu kamera kurulumu planlandığında).                                                                                 
+(çoklu kamera kurulumu planlandığında).
+
+**Karar (2026-11-25):** Kafka RF≥2/çok-broker yükseltmesi ayrı bir faz
+olarak sonraya bırakıldı — WS/Redis işiyle birleştirilmeyecek
+(`ARCHITECTURE_GAP_ANALYSIS.md` madde 8'e işlendi). Hâlâ açık:
+anomaly_detection ML iskeletleri, ADR-009'un zamanlaması.                                                                                 
   
 

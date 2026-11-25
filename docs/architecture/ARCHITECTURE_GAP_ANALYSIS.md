@@ -24,6 +24,12 @@
 | 10 | ROI/slot config'inde (`config/slots/cam*.json`) versiyon/zaman damgası alanı yok | Mapping değişikliklerinin izlenebilirliği yok | Debug/denetim zorlaşır | **P2** | Config şemasına `version`/`updated_at` alanı ekle (bkz. ADR-002) |
 | 11 | `anomaly_detection` modülü kamera doluluk verisiyle bağlantısız (tek park-ilişkili sınıf barrier/turnike event'lerini tüketiyor) | Mevcut sinyal (flip-rate, occlusion — zaten edge'de `PredictionLog` ile kısmen üretiliyor) merkezi analiz göremiyor | Düşük, iş değeri var ama acil değil | **P3** | Kafka tüketimi kurulduktan sonra (madde 2 çözülünce) ayrı bir karar olarak değerlendirilsin |
 
+> **Karar (2026-11-25):** Madde 8 (Kafka RF≥2/çok-broker yükseltmesi) ayrı
+> bir faz olarak sonraya bırakıldı — WS/Redis işiyle (ADR-006/ADR-007)
+> birleştirilmeyecek. Gerekçe: uygulama doğruluğu RF'den bağımsız, sadece
+> broker-down dayanıklılığı etkileniyor; gerçek üretim ölçeğine kadar aciliyeti
+> yok. P1 (ölçek büyüdükçe P0) etiketi ve bu bağımsız-faz kararı geçerli kalıyor.
+
 > **Güncelleme (2026-11-24 doğrulama turu):** Madde 1 artık daha acil — edge'de `mqtt.enabled` üretimde `true`'ya çevrildiği için (bkz. CURRENT_STATE §4 güncelleme notu) bu bug teorik değil aktif risk; bu tur içinde `mqtt_publisher.py`'de düzeltildi (bkz. IMPLEMENTATION_ROADMAP Aşama 0). Madde 4 için backend'de kısmi bir refactor yapıldı (`24ab3ad`): `ParkSlotOccupancy` artık `parkInfoId` bazlı, `lastCameraId`/`lastCameraCode` eklendi, entity yorumu bare-slotIndex niyeti belirtiyor. **Ama** gerçek slot-key hâlâ edge'den gelen ham (`{cameraCode}-{slotId}`) string olduğu için davranışsal olarak orphan riski **kapanmadı** — madde 4 hâlâ **P1 açık** (bkz. CURRENT_STATE.md §8 güncelleme notu, ADR-002 status update).
 
 ## 2. Production Failure Scenario Matrisi
