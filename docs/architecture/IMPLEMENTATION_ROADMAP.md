@@ -117,6 +117,18 @@
 
 ## Aşama 5 — Altyapı Temizliği (GAP #9, P2)
 
+> **Durum (2026-11-25): Tamamlandı.** selfpark-backend commit `4d162d6`,
+> push edildi. `MqttConnectionConfig`'ten hiçbir yerde referans edilmeyen
+> (errorChannel binding'i yok) `kafkaFailureChannel`/`kafkaFailureHandler`
+> bean'leri kaldırıldı. `KafkaProducerConfig.java` tamamen silindi — hiçbir
+> yerden inject edilmeyen, `KafkaConfig.producerConfigs()` ile duplike bir
+> `producerConfigs()` bean'i (gerçek üretimde kullanılan tek producer config
+> `KafkaConfig.java`'daki özel `ProducerFactory`/`KafkaTemplate` bean'leri).
+> `application.yml`'deki `spring.kafka.producer.acks: 1` satırı kaldırıldı —
+> Spring Boot'un bu bloktan üreteceği producer bean'i hiç devreye girmiyordu
+> (gerçek değer `acks=all`, `KafkaConfig.producerConfigs()`'te hardcoded).
+> Davranış değişikliği yok, 86 test yeşil.
+
 **Hedef:** Ölü kod ve çelişkili config'leri temizlemek (işlevsel etkisi yok, bakım kalitesi için).
 **Bağımlılıklar:** Yok — herhangi bir aşamadan bağımsız, paralel yapılabilir.
 **Değişmesi beklenen modüller:** `MqttConnectionConfig.java` (`kafkaFailureChannel`'ı kaldır veya gerçekten kullan), `KafkaProducerConfig.java` (duplike bean'i kaldır), `application.yml` (`acks=1` satırını gerçek değerle senkronla veya kaldır).

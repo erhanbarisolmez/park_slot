@@ -353,6 +353,34 @@ anomaly_detection ML iskeletleri, ADR-009'un zamanlaması.
 yapılmadı — bağımsız, düşük risk. Hâlâ açık: anomaly_detection ML
 iskeletleri, ADR-009'un zamanlaması. Watchdog/periyodik snapshot henüz
 prod'a deploy edilmedi (sadece local test edildi) — CI→ghcr→ArgoCD akışı
-bir dahaki oturumda tetiklenmeli.                                                                                 
+bir dahaki oturumda tetiklenmeli.
+
+## 2026-11-25 beşinci oturum — Aşama 5 (altyapı temizliği) tamamlandı
+
+1. `MqttConnectionConfig`'teki `kafkaFailureChannel`/`kafkaFailureHandler`
+   bean'leri silindi — hiçbir yerde `errorChannel` binding'i veya kanal adı
+   referansı yoktu, kesin ölü kod (grep ile doğrulandı).
+2. `KafkaProducerConfig.java` tamamen silindi — `@Bean producerConfigs()`
+   hiçbir yerden inject edilmiyordu; gerçek producer zaten
+   `KafkaConfig.java`'daki özel `ProducerFactory`/`KafkaTemplate`
+   bean'lerinden geliyor (kendi `producerConfigs()` private metodu var,
+   bu dosyadakiyle aynı değerler — tam duplike).
+3. `application.yml`'deki `spring.kafka.producer.acks: 1` satırı
+   kaldırıldı (açıklayıcı not eklendi) — Spring Boot'un bu bloktan
+   üreteceği producer bean'i zaten hiç devreye girmiyor (uygulama kendi
+   `ProducerFactory`'sini tanımlıyor), gerçek değer `acks=all`
+   (`KafkaConfig.producerConfigs()`'te hardcoded).
+4. GAP #9'un "3 bağımsız DLQ üretim yolu" alt maddesi bu turda ELE
+   ALINMADI — ayrı, daha kapsamlı bir inceleme gerektiriyor, roadmap
+   kapsamı (`Değişmesi beklenen modüller` listesi) bunu içermiyordu.
+5. Build temiz, 86 test yeşil, davranış değişikliği yok. selfpark-backend
+   commit `4d162d6`, push edildi.
+
+**Yarına/sonraya kalan:** Roadmap'teki 5 aşamanın hepsi (0-5) artık
+tamamlandı. Watchdog/periyodik snapshot (Aşama 4) henüz prod'a deploy
+edilmedi (sadece local test edildi) — CI→ghcr→ArgoCD akışı bir dahaki
+oturumda tetiklenmeli. Hâlâ açık: Kafka RF≥2 zamanlaması (ayrı faz),
+anomaly_detection ML iskeletleri, ADR-009'un zamanlaması, GAP #9'daki DLQ
+üretim yolu tekrarı.                                                                                 
   
 
