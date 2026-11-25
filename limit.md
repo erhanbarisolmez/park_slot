@@ -377,10 +377,18 @@ bir dahaki oturumda tetiklenmeli.
    commit `4d162d6`, push edildi.
 
 **Yarına/sonraya kalan:** Roadmap'teki 5 aşamanın hepsi (0-5) artık
-tamamlandı. Watchdog/periyodik snapshot (Aşama 4) henüz prod'a deploy
-edilmedi (sadece local test edildi) — CI→ghcr→ArgoCD akışı bir dahaki
-oturumda tetiklenmeli. Hâlâ açık: Kafka RF≥2 zamanlaması (ayrı faz),
+tamamlandı. Hâlâ açık: Kafka RF≥2 zamanlaması (ayrı faz),
 anomaly_detection ML iskeletleri, ADR-009'un zamanlaması, GAP #9'daki DLQ
-üretim yolu tekrarı.                                                                                 
+üretim yolu tekrarı.
+
+## 2026-11-25 altıncı oturum — Aşama 4 prod doğrulaması
+
+CI, `964a893`'ü otomatik build/push etti; ArgoCD sync etti (`Synced`/`Healthy`,
+3 pod yeni image'da). cam1-3 loglarında hata/uyarı yok. Kafka consumer group
+lag=0. **Periyodik snapshot canlıda doğrulandı**: pod başlangıç patlamasından
+(10:35:06) ayrı, delta kuyruğundan bağımsız yeni mesajlar tam ~300s sonra
+(10:39:51, CAM-002/CAM-003) Kafka'ya düştü — beklenen cadence'le örtüşüyor.
+Watchdog'un gerçek tetiklenmesi canlı trafiği bozmamak için prod'da
+zorlanmadı (test edilen tek şey: yanlış/istenmeyen tetiklenme yok).                                                                                 
   
 

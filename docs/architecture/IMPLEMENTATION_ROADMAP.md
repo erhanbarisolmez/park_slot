@@ -105,6 +105,18 @@
 > 4. Testler: 11 yeni test (`StateStore.mark_all_unknown` x4,
 >    `Pipeline._check_watchdog` x3, `OutboxWorker.snapshot_once` x3,
 >    toplamda +1 zamanlama düzeltmesi) — 123 test yeşil (tüm `tests/unit`).
+> 5. **Deploy + prod doğrulaması (2026-11-25):** CI, commit `964a893`'ü
+>    otomatik build edip ghcr'a push etti, k8s manifestlerini güncelleyen
+>    deploy commit'i (`7986b3f`) ArgoCD tarafından sync edildi (3 pod da
+>    yeni image'da, `Synced`/`Healthy`). cam1-3 loglarında hata/uyarı yok
+>    (watchdog yanlış tetiklenmiyor). Kafka consumer group lag=0 (her iki
+>    topic). **Periyodik snapshot canlıda doğrulandı:** pod başlangıcındaki
+>    on-connect patlamasından (10:35:06) ayrı, delta kuyruğundan bağımsız
+>    yeni snapshot mesajları tam ~300s sonra (10:39:51, CAM-002/CAM-003)
+>    Kafka'ya düştü — `snapshot_interval_seconds` beklenen cadence'i
+>    doğruluyor. Watchdog'un gerçek tetiklenmesi (kamera donması) canlı
+>    trafiği bozmamak için prod'da zorlanmadı — birim testler + log
+>    gözlemiyle (yanlış tetiklenme yok) doğrulandı.
 
 **Hedef:** Uzun süreli offline/drift senaryolarını ve donuk-stale-state riskini kapatmak.
 **Bağımlılıklar:** Aşama 1 (snapshot için outbox altyapısı), Aşama 2 (snapshot event formatı/topic'i).
