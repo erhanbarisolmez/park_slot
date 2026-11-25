@@ -140,6 +140,7 @@ def main():
     state_store = StateStore(
         camera_id=slot_manager.camera_id,
         minimap_coords=slot_manager.minimap_coords,
+        confirm_seconds=settings.occupancy.confirm_seconds,
     )
     monitor = Monitor()
     prediction_log = PredictionLog(log_path="data/logs/predictions.jsonl")
@@ -156,14 +157,13 @@ def main():
         db_path = settings.outbox.db_path.format(camera_code=slot_manager.camera_id)
         outbox = Outbox(db_path=db_path)
 
-        # ADR-001: restart/ilk bağlantıda BİR KEZ tam snapshot (persisted
-        # slot_state'ten, SQLite dosyası restart'lar arası kalıcı - Aşama 1).
+        # ADR-001: her (yeniden) MQTT bağlantısında güncel tam snapshot
+        # (persisted slot_state'ten, SQLite dosyası restart'lar arası kalıcı -
+        # Aşama 1) - bkz. MqttPublisher.enable_startup_snapshot docstring'i.
         # Normal akışın tamamı artık delta kanalından (OutboxWorker aşağıda)
-        # gidiyor; periyodik reconciliation (ADR-008) Aşama 4'e bırakıldı.
-        full_state = outbox.read_full_state()
-        if full_state:
-            mqtt_publisher.publish_raw(full_state)
-            logger.info("Restart/ilk bağlantı snapshot'ı gönderildi: %d slot", len(full_state))
+        # gidiyor; periyodik/timer tabanlı reconciliation (ADR-008) Aşama 4'e
+        # bırakıldı.
+        mqtt_publisher.enable_startup_snapshot(outbox.read_full_state)
 
         state_store.on_change(outbox.on_slot_change)
         outbox_worker = OutboxWorker(

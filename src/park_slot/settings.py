@@ -73,6 +73,15 @@ class MqttConfig(BaseModel):
     qos: int = 1
 
 
+class OccupancyConfig(BaseModel):
+    """Slot durum değişikliğinin "onaylı" sayılması için gereken minimum
+    kararlılık süresi (bkz. services/state_store.py docstring,
+    StateStore._apply_hysteresis). Düşük değer gürültülü/geçici flip'leri
+    "gerçek" değişiklik sanma riskini artırır, yüksek değer gerçek
+    değişiklikleri raporlamakta gecikmeye sebep olur."""
+    confirm_seconds: float = 10.0
+
+
 class OutboxConfig(BaseModel):
     """MQTT gönderiminin restart/broker kesintisine dayanıklı olması için
     SQLite tabanlı outbox ayarları (bkz. docs/architecture/ADR_DOCUMENTS.md
@@ -93,6 +102,7 @@ class Settings(BaseSettings):
     api: ApiConfig = ApiConfig()
     mqtt: MqttConfig = MqttConfig()
     outbox: OutboxConfig = OutboxConfig()
+    occupancy: OccupancyConfig = OccupancyConfig()
 
 
 def load_settings(config_path: Path | None = None) -> Settings:

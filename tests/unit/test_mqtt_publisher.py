@@ -12,6 +12,7 @@ class FakeMqttClient:
         self.published: list[tuple[str, str, int]] = []
         self._raise_on_publish = raise_on_publish
         self._connected = connected
+        self.on_connect = None
 
     def is_connected(self) -> bool:
         return self._connected
@@ -20,6 +21,13 @@ class FakeMqttClient:
         if self._raise_on_publish:
             raise RuntimeError("broker bağlantısı yok")
         self.published.append((topic, payload, qos))
+
+    def simulate_connect(self, reason_code: int = 0) -> None:
+        """Gerçek paho client'ın bağlantı kurulunca self.on_connect'i
+        çağırmasını simüle eder (bkz. MqttPublisher._on_connect)."""
+        self._connected = True
+        if self.on_connect is not None:
+            self.on_connect(self, None, None, reason_code)
 
 
 def make_status(slots: dict[int, SlotStatus], camera_id: str = "cam1") -> ParkingStatus:
@@ -205,6 +213,41 @@ def test_publish_slot_changed_no_dedup_same_payload_sent_twice():
     publisher.publish_slot_changed(1, "EMPTY", "OCCUPIED", 3)
 
     assert len(client.published) == 2
+
+
+def test_enable_startup_snapshot_sends_immediately_when_already_connected():
+    """Client enable_startup_snapshot çağrıldığında zaten bağlıysa (paho'nun
+    connect_async'i bu çağrıdan önce tamamlanmış), on_connect bir daha
+    tetiklenmeyeceği için provider hemen bir kez çağrılıp publish edilmeli."""
+    client = FakeMqttClient(connected=True)
+    publisher = MqttPublisher(make_settings(), camera_id="cam1", state_store=None, client=client)
+
+    publisher.enable_startup_snapshot(lambda: {1: "EMPTY", 2: "OCCUPIED"})
+
+    assert len(client.published) == 1
+    topic, payload, _ = client.published[0]
+    assert topic == "selfpark/camera/CAM-001/detection"
+    import json
+    assert json.loads(payload) == {"slots": {"CAM-001-1": "EMPTY", "CAM-001-2": "OCCUPIED"}}
+
+
+def test_enable_startup_snapshot_sends_on_later_connect():
+    """Client henüz bağlı değilken enable_startup_snapshot çağrılırsa, hemen
+    publish denenmemeli; bağlantı kurulduğunda (on_connect tetiklenince)
+    provider'dan okunan en güncel state gönderilmeli."""
+    client = FakeMqttClient(connected=False)
+    publisher = MqttPublisher(make_settings(), camera_id="cam1", state_store=None, client=client)
+
+    publisher.enable_startup_snapshot(lambda: {1: "EMPTY"})
+    assert len(client.published) == 0
+
+    client.simulate_connect()
+
+    assert len(client.published) == 1
+    topic, payload, _ = client.published[0]
+    assert topic == "selfpark/camera/CAM-001/detection"
+    import json
+    assert json.loads(payload) == {"slots": {"CAM-001-1": "EMPTY"}}
 
 
 def test_on_slot_change_uses_state_store_snapshot():

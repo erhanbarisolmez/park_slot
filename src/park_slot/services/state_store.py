@@ -34,7 +34,7 @@ class StateStore:
     def __init__(
         self,
         camera_id: str = "cam1",
-        confirm_seconds: float = 4.0,
+        confirm_seconds: float = 10.0,
         clock: Callable[[], float] = time.time,
         occlusion_min_slots: int = 3,
         occlusion_max_seconds: float = 25.0,

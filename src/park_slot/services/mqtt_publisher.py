@@ -9,9 +9,10 @@ ADR-001'den itibaren İKİ ayrı kanal var:
                  "currentStatus": "EMPTY"|"OCCUPIED"|"UNKNOWN", "version": int,
                  "timestamp": epoch-millis}
 
-2. Snapshot (sadece restart/ilk bağlantıda BİR KEZ, publish_raw/publish -
-   __main__.py'de outbox.read_full_state() ile çağrılır, ADR-008/periyodik
-   reconciliation Aşama 4'e bırakıldı):
+2. Snapshot (her (yeniden) MQTT bağlantısında, en güncel state ile -
+   enable_startup_snapshot ile kaydedilen provider'dan okunur, publish_raw
+   üzerinden gönderilir; ADR-008/periyodik (timer tabanlı) reconciliation
+   hâlâ Aşama 4'e bırakıldı, bu sadece bağlantı olayına bağlı):
        Topic:   selfpark/camera/{camera_code}/detection
        Payload: {"slots": {"<camera_code>-<slot_id>": "EMPTY"|"OCCUPIED"|"UNKNOWN", ...}}
 
@@ -33,7 +34,7 @@ import json
 import logging
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from park_slot.annotation.schema import ParkingStatus, SlotState
 from park_slot.settings import MqttConfig
@@ -55,6 +56,7 @@ class MqttPublisher:
         self._lock = threading.Lock()
         self._last_payload: Optional[dict] = None
         self._client = None
+        self._snapshot_provider: Optional[Callable[[], dict]] = None
 
         if not settings.enabled:
             logger.info("MQTT publisher devre dışı (mqtt.enabled=false).")
@@ -82,6 +84,44 @@ class MqttPublisher:
         except Exception as e:
             logger.error("MQTT broker'a bağlanılamadı: %s", e)
             return None
+
+    def enable_startup_snapshot(self, provider: Callable[[], dict]) -> None:
+        """Bağlantı kurulduğunda (ilk bağlantı veya herhangi bir sonraki
+        yeniden bağlanma) en güncel tam state'i best-effort snapshot olarak
+        gönder.
+
+        Neden on_connect'e bağlı: _connect() connect_async kullandığı için
+        constructor bittiğinde client henüz bağlı olmayabilir - çağıran
+        tarafın (bkz. __main__.py) hemen publish_raw çağırması, is_connected()
+        false olduğu için snapshot'ı sessizce (retry'sız) kaybedebiliyordu.
+        on_connect'e bağlamak hem bu ilk-bağlantı yarışını giderir hem de
+        broker restart/ağ kesintisi sonrası otomatik resync sağlar - periyodik
+        bir timer DEĞİL, sadece bağlantı olayına tepki.
+        """
+        if self._client is None:
+            return
+        self._snapshot_provider = provider
+        self._client.on_connect = self._on_connect
+        if self._client.is_connected():
+            # connect_async bu çağrıdan önce tamamlanmış olabilir - bu
+            # durumda on_connect bir daha tetiklenmeyecek, burada elle
+            # bir kez gönderilir.
+            self._send_snapshot()
+
+    def _on_connect(self, client, userdata, connect_flags, reason_code, properties=None) -> None:
+        if reason_code == 0:
+            self._send_snapshot()
+
+    def _send_snapshot(self) -> None:
+        if self._snapshot_provider is None:
+            return
+        full_state = self._snapshot_provider()
+        if not full_state:
+            return
+        sent = self.publish_raw(full_state)
+        logger.info(
+            "Bağlantı snapshot'ı gönderildi: %d slot (ok=%s)", len(full_state), sent,
+        )
 
     def on_slot_change(self, _state: SlotState) -> None:
         """StateStore.on_change callback'i. Parametre olarak gelen tek slot

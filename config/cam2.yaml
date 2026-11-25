@@ -40,3 +40,6 @@ mqtt:
   broker_port: 1883
   camera_code: "CAM-002"
   qos: 1
+# Slot durumu "onaylı" sayılmadan önce gereken minimum kararlılık süresi (saniye)
+occupancy:
+  confirm_seconds: 10.0
