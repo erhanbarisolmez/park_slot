@@ -318,6 +318,41 @@ anomaly_detection ML iskeletleri, ADR-009'un ne zaman uygulanacağı
 **Karar (2026-11-25):** Kafka RF≥2/çok-broker yükseltmesi ayrı bir faz
 olarak sonraya bırakıldı — WS/Redis işiyle birleştirilmeyecek
 (`ARCHITECTURE_GAP_ANALYSIS.md` madde 8'e işlendi). Hâlâ açık:
-anomaly_detection ML iskeletleri, ADR-009'un zamanlaması.                                                                                 
+anomaly_detection ML iskeletleri, ADR-009'un zamanlaması.
+
+## 2026-11-25 dördüncü oturum — Aşama 4 (reconciliation + kamera watchdog) tamamlandı
+
+1. **Kamera watchdog:** `StateStore.mark_all_unknown()` — hysteresis'i
+   BYPASS ederek tüm override'sız slotları anında UNKNOWN'a çeker (kabul
+   kriteri "N dakika sonra UNKNOWN görünüyor" diyor, ek confirm_seconds
+   gecikmesi istemiyor). Zaten UNKNOWN olanları atlar (gereksiz
+   bildirim/outbox satırı yok). `Pipeline._check_watchdog()`, her loop
+   turunda `_last_frame_at`'ten geçen süreyi `watchdog.stale_after_seconds`
+   (varsayılan 120s) ile kıyaslar.
+2. **Periyodik snapshot:** `OutboxWorker.snapshot_once()` — delta
+   kuyruğundan bağımsız, `outbox.read_full_state()`'i `publish_raw` ile
+   gönderir; `_run` döngüsünde `snapshot_interval_seconds` (varsayılan 300s,
+   ADR-008'in önerdiği "~5 dakikada bir") her geçtiğinde tetiklenir. ADR-008
+   (a) bacağı (reconnect/restart) zaten Aşama 2'de vardı, bu (b) bacağını
+   (zaman tabanlı) tamamladı.
+3. **Backend'de değişiklik YOK** — `ParkOccupancyManager.processDetection`
+   zaten merge-upsert (ADR-003 "edge kazanır" zaten koşulsuz uygulanıyordu),
+   snapshot sıklığı davranışı etkilemiyor. Aşama 3 gibi backend-only değil,
+   bu kez tam tersine **edge-only**.
+4. Yeni config: `settings.watchdog` (`enabled`, `stale_after_seconds`),
+   `settings.outbox.snapshot_interval_seconds` — YAML'lara eklenmedi
+   (outbox bölümü de hiç YAML'da yok, kod varsayılanı kullanılıyor, mevcut
+   örüntüyle tutarlı).
+5. Testler: 11 yeni test eklendi (`test_state_store.py` x4,
+   `test_pipeline.py` x3, `test_outbox.py` x3 + 1 zamanlama düzeltmesi
+   mevcut testte) — `tests/unit` tamamı: 123 test yeşil.
+6. Doküman güncellendi (`IMPLEMENTATION_ROADMAP.md` Aşama 4 durumu,
+   `ADR_DOCUMENTS.md` ADR-008 status update).
+
+**Yarına/sonraya kalan:** Aşama 5 (altyapı temizliği, GAP #9) hâlâ
+yapılmadı — bağımsız, düşük risk. Hâlâ açık: anomaly_detection ML
+iskeletleri, ADR-009'un zamanlaması. Watchdog/periyodik snapshot henüz
+prod'a deploy edilmedi (sadece local test edildi) — CI→ghcr→ArgoCD akışı
+bir dahaki oturumda tetiklenmeli.                                                                                 
   
 

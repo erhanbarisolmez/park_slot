@@ -83,6 +83,29 @@
 
 ## Aşama 4 — Reconciliation + Kamera Watchdog (ADR-008, GAP #5)
 
+> **Durum (2026-11-25): Tamamlandı (edge-only).** Backend'de hiçbir değişiklik
+> gerekmedi — `ParkOccupancyManager.processDetection` zaten merge-upsert
+> (ADR-003'ün "edge kazanır" kararını her zaten koşulsuz yazıyordu, snapshot'ın
+> daha sık gelmesi davranışı değiştirmiyor).
+> 1. **Kamera watchdog:** `StateStore.mark_all_unknown()` — hysteresis'i
+>    bypass ederek tüm (override'lı olmayan) slotları ANINDA UNKNOWN'a çeker;
+>    `Pipeline._check_watchdog()`, `_loop`'un her turunda son başarılı kareden
+>    (`_last_frame_at`) geçen süreyi `watchdog.stale_after_seconds`
+>    (varsayılan 120s) ile karşılaştırır. Kamera kareye dönünce normal
+>    `update_batch` akışı devreye girer (occlusion recovery ile aynı yol,
+>    2x `confirm_seconds`).
+> 2. **Periyodik snapshot:** `OutboxWorker.snapshot_once()` — `_run`
+>    döngüsünde `outbox.snapshot_interval_seconds` (varsayılan 300s) her
+>    geçtiğinde, delta kuyruğundan bağımsız tam `slot_state` snapshot'ı
+>    gönderilir. ADR-008'in (a) bacağı (reconnect/restart, Aşama 2'de
+>    `enable_startup_snapshot`/`on_connect`) zaten vardı; bu, (b) bacağını
+>    (zaman tabanlı, bağlantı kopmasa da) tamamlıyor.
+> 3. Yeni config: `settings.watchdog` (`enabled`, `stale_after_seconds`),
+>    `settings.outbox.snapshot_interval_seconds`.
+> 4. Testler: 11 yeni test (`StateStore.mark_all_unknown` x4,
+>    `Pipeline._check_watchdog` x3, `OutboxWorker.snapshot_once` x3,
+>    toplamda +1 zamanlama düzeltmesi) — 123 test yeşil (tüm `tests/unit`).
+
 **Hedef:** Uzun süreli offline/drift senaryolarını ve donuk-stale-state riskini kapatmak.
 **Bağımlılıklar:** Aşama 1 (snapshot için outbox altyapısı), Aşama 2 (snapshot event formatı/topic'i).
 **Değişmesi beklenen modüller:** Edge `outbox.py`'ye periyodik snapshot tetikleyici, `capture/rtsp.py`/`pipeline.py`'ye `last_frame_at` watchdog (eşik aşılırsa ilgili kameranın slotlarını `UNKNOWN`'a çekme), backend'de snapshot event'leri için consumer dalı.

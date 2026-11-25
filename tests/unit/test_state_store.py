@@ -292,3 +292,62 @@ def test_single_slot_change_not_treated_as_occlusion():
         ])
 
     assert store.get_slot(1).status == SlotStatus.OCCUPIED
+
+
+def test_mark_all_unknown_sets_every_known_slot_immediately():
+    """ADR-008 watchdog: mark_all_unknown hysteresis'i bypass eder - tek
+    çağrıda, confirm_seconds beklemeden tüm slotlar UNKNOWN olmalı."""
+    store = StateStore(camera_id="test", confirm_seconds=10.0, clock=make_clock())
+    store.update_batch([
+        (1, "S1", SlotStatus.EMPTY, 0.9),
+        (2, "S2", SlotStatus.OCCUPIED, 0.9),
+    ])
+
+    store.mark_all_unknown()
+
+    assert store.get_slot(1).status == SlotStatus.UNKNOWN
+    assert store.get_slot(2).status == SlotStatus.UNKNOWN
+
+
+def test_mark_all_unknown_skips_overridden_slots():
+    """Operatörün elle sabitlediği (set_override) bir slot, kamera donsa
+    bile otomatik olarak UNKNOWN'a çekilmemeli - override kamera
+    gözleminden bağımsız bir operatör kararı."""
+    store = StateStore(camera_id="test", clock=make_clock())
+    store.update_batch([(1, "S1", SlotStatus.EMPTY, 0.9)])
+    store.set_override(1, SlotStatus.OCCUPIED)
+
+    store.mark_all_unknown()
+
+    assert store.get_slot(1).status == SlotStatus.OCCUPIED
+
+
+def test_mark_all_unknown_does_not_renotify_already_unknown_slots():
+    """Zaten UNKNOWN olan bir slot için tekrar callback tetiklenmemeli -
+    watchdog her tick'te çağrılabildiği için gereksiz bildirim/outbox
+    satırı üretmemek önemli."""
+    store = StateStore(camera_id="test", clock=make_clock())
+    store.update_batch([(1, "S1", SlotStatus.UNKNOWN, 0.9)])
+
+    notifications = []
+    store.on_change(notifications.append)
+    store.mark_all_unknown()
+
+    assert notifications == []
+
+
+def test_mark_all_unknown_recovers_through_normal_hysteresis():
+    """Kamera kareye döndüğünde slotlar normal update_batch akışına girer -
+    UNKNOWN'dan çıkış occlusion recovery ile aynı yolu (2x confirm_seconds)
+    kullanır, anında geri dönmez (gürültülü tek bir kareye güvenmemek için)."""
+    store = StateStore(camera_id="test", confirm_seconds=2.0, clock=make_clock(step=1.0))
+    store.update_batch([(1, "S1", SlotStatus.EMPTY, 0.9)])
+    store.mark_all_unknown()
+
+    store.update_batch([(1, "S1", SlotStatus.EMPTY, 0.9)])
+    assert store.get_slot(1).status == SlotStatus.UNKNOWN  # henüz 2x süre geçmedi
+
+    for _ in range(4):
+        store.update_batch([(1, "S1", SlotStatus.EMPTY, 0.9)])
+
+    assert store.get_slot(1).status == SlotStatus.EMPTY

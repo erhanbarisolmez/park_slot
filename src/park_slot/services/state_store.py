@@ -324,6 +324,40 @@ class StateStore:
         for state in changed_states:
             self._notify(state)
 
+    def mark_all_unknown(self) -> None:
+        """ADR-008 kamera watchdog: kamera uzun süre kare üretmeyi
+        durdurduğunda tüm slotları ANINDA UNKNOWN'a çeker - normal
+        _apply_hysteresis akışının (confirm_seconds, UNKNOWN'dan çıkışta 2x)
+        BEKLENMESİ kabul kriterine aykırı olurdu ("kamera N dakika kare
+        üretmezse slotlar UNKNOWN görünüyor" - ek gecikme istenmiyor).
+
+        Operatörün set_override ile sabitlediği slotlar dokunulmaz - kamera
+        donması, operatörün fiziksel gözlemiyle ilgili bir sinyal değil.
+        Zaten UNKNOWN olan slotlar atlanır (gereksiz yeniden bildirim/outbox
+        satırı üretmemek için). Kamera kareye dönünce normal update_batch
+        akışı devreye girer - old.status UNKNOWN olduğu için (occlusion
+        recovery ile aynı yol) 2x confirm_seconds sonra gerçek duruma döner."""
+        now = self._clock()
+        changed_states = []
+        with self._lock:
+            for slot_id, state in list(self._slots.items()):
+                if slot_id in self._overrides or state.status == SlotStatus.UNKNOWN:
+                    continue
+                self._pending.pop(slot_id, None)
+                self._occlusion_since.pop(slot_id, None)
+                new_state = state.model_copy(update={
+                    "status": SlotStatus.UNKNOWN,
+                    "raw_status": SlotStatus.UNKNOWN,
+                    "stable_since": now,
+                })
+                self._slots[slot_id] = new_state
+                changed_states.append(new_state)
+            if changed_states:
+                self._last_update = now
+
+        for state in changed_states:
+            self._notify(state)
+
     def get_status(self) -> ParkingStatus:
         """Tüm otoparkın anlık durumunu döndür."""
         with self._lock:

@@ -52,6 +52,8 @@ class Pipeline:
         show_window: bool = False,
         vehicle_detector: VehicleDetector | None = None,
         vehicle_detector_interval: int = 1,
+        watchdog_enabled: bool = True,
+        watchdog_stale_after: float = 120.0,
     ):
         self._source = source
         self._engine = engine
@@ -60,6 +62,13 @@ class Pipeline:
         self._monitor = monitor
         self._frame_interval = frame_interval
         self._show_window = show_window
+        # ADR-008 kamera watchdog: son başarılı kare zamanı - _check_watchdog
+        # bunu referans alır. Başlangıçta "şimdi"ye set edilir ki kamera henüz
+        # ilk kareyi üretmeden (örn. RTSP bağlantı gecikmesi) watchdog hemen
+        # tetiklenmesin.
+        self._watchdog_enabled = watchdog_enabled
+        self._watchdog_stale_after = watchdog_stale_after
+        self._last_frame_at = time.time()
         self._vehicle_detector = vehicle_detector
         # Dedektör (~450ms/kare, bkz. vehicle_detector.py) sadece yavaş
         # değişen bir fiziksel durumu (park edilmiş araç) geometrik olarak
@@ -265,6 +274,8 @@ class Pipeline:
             except Exception as e:
                 logger.error("Frame işleme hatası: %s", e)
 
+            self._check_watchdog()
+
             # Frame interval kadar bekle
             elapsed = time.time() - frame_start
             self._monitor.record_frame(elapsed)
@@ -273,6 +284,18 @@ class Pipeline:
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
+    def _check_watchdog(self) -> None:
+        """ADR-008: kamera `watchdog_stale_after` saniye boyunca hiç kare
+        üretmediyse, tüm slotları UNKNOWN'a çek (bkz. StateStore.mark_all_unknown
+        docstring'i - hysteresis'i bypass eder, kabul kriteri ek gecikme
+        istemiyor). mark_all_unknown zaten-UNKNOWN slotları atladığı için
+        eşik aşıldıktan sonra her tick'te tekrar çağırmak güvenli/no-op'a
+        yakın - burada ayrıca bir "zaten tetiklendi" bayrağı tutmaya gerek yok."""
+        if not self._watchdog_enabled:
+            return
+        if time.time() - self._last_frame_at > self._watchdog_stale_after:
+            self._state_store.mark_all_unknown()
+
     def _process_frame(self) -> None:
         """Tek bir kareyi işle: yakala → kırp → tahmin → güncelle."""
         # 1. Kare yakala
@@ -280,6 +303,7 @@ class Pipeline:
         if frame is None:
             logger.warning("Kare alınamadı")
             return
+        self._last_frame_at = time.time()
 
         # 2. Slotları kırp ve tensor'a çevir
         slots, tensors = self._slot_manager.get_tensors(frame)

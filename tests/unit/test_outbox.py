@@ -240,6 +240,41 @@ def test_flush_once_is_noop_when_nothing_pending(tmp_path):
     assert publisher.slot_changed_calls == []
 
 
+def test_snapshot_once_sends_full_slot_state_via_publish_raw(tmp_path):
+    """ADR-008 periyodik reconciliation: outbox'ta bekleyen satır olmasa
+    bile (delta kuyruğu boş), snapshot_once tam slot_state'i publish_raw
+    üzerinden gönderir."""
+    outbox = Outbox(db_path=str(tmp_path / "outbox.db"))
+    outbox.record_change(1, "EMPTY", 0.9)
+    outbox.record_change(2, "OCCUPIED", 0.9)
+    _, max_id = outbox.read_pending()
+    outbox.mark_sent_up_to(max_id)  # delta kuyruğu boşaltıldı
+
+    publisher = FakePublisher(succeed=True)
+    worker = OutboxWorker(outbox, publisher)
+
+    assert worker.snapshot_once() is True
+    assert publisher.calls == [{1: "EMPTY", 2: "OCCUPIED"}]
+
+
+def test_snapshot_once_is_noop_when_no_slot_state_yet(tmp_path):
+    outbox = Outbox(db_path=str(tmp_path / "outbox.db"))
+    publisher = FakePublisher(succeed=True)
+    worker = OutboxWorker(outbox, publisher)
+
+    assert worker.snapshot_once() is True
+    assert publisher.calls == []
+
+
+def test_snapshot_once_propagates_publish_failure(tmp_path):
+    outbox = Outbox(db_path=str(tmp_path / "outbox.db"))
+    outbox.record_change(1, "EMPTY", 0.9)
+    publisher = FakePublisher(succeed=False)
+    worker = OutboxWorker(outbox, publisher)
+
+    assert worker.snapshot_once() is False
+
+
 def test_read_full_state_returns_all_slot_state_rows(tmp_path):
     """read_full_state - outbox'ta bekleyen olup olmadığından bağımsız, TAM
     slot_state görüntüsü (restart/ilk bağlantı snapshot'ı için, ADR-001)."""

@@ -178,6 +178,18 @@ CREATE TABLE outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, slot_id INTEGER, stat
 
 **Rejected Alternatives:** Seçenek 2 (tam event replay) reddedildi — büyük partition'larda yavaş, reconnect gecikmesini artırır, ve zaten ADR-003 gereği edge'in "şu an"ki durumu yeterli (geçmiş geçişlerin replay'i iş değeri katmıyor bu senaryoda).
 
+> **Status update (2026-11-25, Aşama 4):** Karar uygulandı. (a) bacağı
+> (reconnect/restart) zaten Aşama 2'de vardı (`MqttPublisher.enable_startup_snapshot`);
+> bu turda (b) bacağı (periyodik, zaman tabanlı) eklendi — `OutboxWorker.snapshot_once()`,
+> `_run` döngüsünde `snapshot_interval` (varsayılan 300s) her geçtiğinde tetiklenir.
+> Ayrıca ADR-008'in kapsamına GAP #5'in "donuk/stale state" yarısı da eklendi:
+> `StateStore.mark_all_unknown()` + `Pipeline._check_watchdog()` — kamera
+> `watchdog.stale_after_seconds` (varsayılan 120s) süresince kare üretmezse
+> slotlar ANINDA (hysteresis bypass) UNKNOWN'a çekilir. Backend'de hiçbir
+> değişiklik gerekmedi — `ParkOccupancyManager.processDetection` zaten
+> gelen her slot için koşulsuz upsert yapıyordu (ADR-003 "edge kazanır"),
+> snapshot'ın sıklığı bu davranışı etkilemiyor.
+
 ---
 
 ## ADR-009: Çok Kameralı Sensör Füzyonu için Ortak Fiziksel Koordinat Sistemi

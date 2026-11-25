@@ -180,12 +180,17 @@ class OutboxWorker:
         publisher,
         poll_interval: float = 5.0,
         retention_days: int = 7,
+        snapshot_interval: float = 300.0,
     ):
         self._outbox = outbox
         self._publisher = publisher
         self._poll_interval = poll_interval
         self._retention_days = retention_days
         self._purge_every_n_ticks = max(1, int(3600 / poll_interval))
+        # ADR-008 Seçenek 3, (b) bacağı: reconnect/restart'a bağlı snapshot
+        # (MqttPublisher.enable_startup_snapshot, on_connect'e bağlı) zaten
+        # var - bu, bağlantı KOPMADAN da periyodik drift düzeltmesi sağlar.
+        self._snapshot_every_n_ticks = max(1, int(snapshot_interval / poll_interval))
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -217,6 +222,17 @@ class OutboxWorker:
         self._outbox.record_attempt_failure()
         return False
 
+    def snapshot_once(self) -> bool:
+        """ADR-008 periyodik reconciliation: outbox'taki durumdan BAĞIMSIZ
+        (delta kuyruğu boş olsa da), slot_state tablosunun tam anlık
+        görüntüsünü snapshot kanalından (publish_raw) gönderir. Bu, bağlantı
+        olayına bağlı enable_startup_snapshot'tan farklı - zaman tabanlı,
+        broker bağlantısı hiç kopmasa bile periyodik drift düzeltmesi sağlar."""
+        full_state = self._outbox.read_full_state()
+        if not full_state:
+            return True
+        return self._publisher.publish_raw(full_state)
+
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, daemon=True, name="outbox-worker")
         self._thread.start()
@@ -240,5 +256,11 @@ class OutboxWorker:
                     self._outbox.purge_sent_older_than(self._retention_days)
                 except Exception as e:
                     logger.error("Outbox temizliği başarısız: %s", e)
+
+            if tick % self._snapshot_every_n_ticks == 0:
+                try:
+                    self.snapshot_once()
+                except Exception as e:
+                    logger.error("Periyodik snapshot hatası: %s", e)
 
             self._stop_event.wait(self._poll_interval)

@@ -91,6 +91,22 @@ class OutboxConfig(BaseModel):
     db_path: str = "data/outbox_{camera_code}.db"
     poll_interval: float = 5.0
     retention_days: int = 7
+    # ADR-008 periyodik reconciliation (Aşama 4): kaç saniyede bir tam
+    # snapshot gönderilir - delta kuyruğundan bağımsız, bağlantı hiç
+    # kopmasa bile zamanla oluşabilecek drift'i düzeltir.
+    snapshot_interval_seconds: float = 300.0
+
+
+class WatchdogConfig(BaseModel):
+    """ADR-008 kamera watchdog (Aşama 4): kamera bu kadar saniye hiç kare
+    üretmezse (RTSP/kaynak donması), ilgili kameranın tüm slotları UNKNOWN'a
+    çekilir (bkz. services/state_store.py StateStore.mark_all_unknown).
+    occlusion_max_seconds (25s, kısa süreli engellenme) ve
+    override_release_seconds (30s) ile karışmaması için bunlardan belirgin
+    şekilde uzun tutulmalı - amaç gerçek bir kamera kesintisini yakalamak,
+    kısa bir donmayı değil."""
+    enabled: bool = True
+    stale_after_seconds: float = 120.0
 
 
 class Settings(BaseSettings):
@@ -103,6 +119,7 @@ class Settings(BaseSettings):
     mqtt: MqttConfig = MqttConfig()
     outbox: OutboxConfig = OutboxConfig()
     occupancy: OccupancyConfig = OccupancyConfig()
+    watchdog: WatchdogConfig = WatchdogConfig()
 
 
 def load_settings(config_path: Path | None = None) -> Settings:

@@ -171,6 +171,7 @@ def main():
             mqtt_publisher,
             poll_interval=settings.outbox.poll_interval,
             retention_days=settings.outbox.retention_days,
+            snapshot_interval=settings.outbox.snapshot_interval_seconds,
         )
         outbox_worker.start()
 
@@ -185,6 +186,8 @@ def main():
         show_window=args.show_window,
         vehicle_detector=vehicle_detector,
         vehicle_detector_interval=settings.detector.interval,
+        watchdog_enabled=settings.watchdog.enabled,
+        watchdog_stale_after=settings.watchdog.stale_after_seconds,
     )
 
     # Graceful shutdown

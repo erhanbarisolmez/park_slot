@@ -125,3 +125,81 @@ def test_list_and_delete_pending_override_image(tmp_path, monkeypatch):
 
     # İkinci silme artık dosya yok, False dönmeli (hata fırlatmamalı).
     assert pipeline.delete_pending_override_image(slot_id, label, filename) is False
+
+
+def test_watchdog_marks_slots_unknown_after_stale_threshold(tmp_path, monkeypatch):
+    """ADR-008: kamera watchdog_stale_after saniyeden uzun süre kare
+    üretmezse (burada _NoopSource hep None döner), _check_watchdog tüm
+    slotları UNKNOWN'a çekmeli."""
+    monkeypatch.chdir(tmp_path)
+    slot_manager = SlotManager(SLOTS_PATH, input_size=64)
+    state_store = StateStore(camera_id=slot_manager.camera_id)
+    state_store.update_batch([
+        (slot.id, slot.label, SlotStatus.EMPTY, 0.9) for slot in slot_manager.slots
+    ])
+    pipeline = Pipeline(
+        source=_NoopSource(),
+        engine=None,
+        slot_manager=slot_manager,
+        state_store=state_store,
+        monitor=Monitor(),
+        frame_interval=1.5,
+        watchdog_enabled=True,
+        watchdog_stale_after=60.0,
+    )
+
+    pipeline._last_frame_at -= 61.0  # eşiği aşacak kadar geriye al
+    pipeline._check_watchdog()
+
+    for slot in slot_manager.slots:
+        assert state_store.get_slot(slot.id).status == SlotStatus.UNKNOWN
+
+
+def test_watchdog_does_not_trigger_before_threshold(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    slot_manager = SlotManager(SLOTS_PATH, input_size=64)
+    state_store = StateStore(camera_id=slot_manager.camera_id)
+    state_store.update_batch([
+        (slot.id, slot.label, SlotStatus.EMPTY, 0.9) for slot in slot_manager.slots
+    ])
+    pipeline = Pipeline(
+        source=_NoopSource(),
+        engine=None,
+        slot_manager=slot_manager,
+        state_store=state_store,
+        monitor=Monitor(),
+        frame_interval=1.5,
+        watchdog_enabled=True,
+        watchdog_stale_after=60.0,
+    )
+
+    pipeline._last_frame_at -= 10.0  # eşiğin altında
+    pipeline._check_watchdog()
+
+    for slot in slot_manager.slots:
+        assert state_store.get_slot(slot.id).status == SlotStatus.EMPTY
+
+
+def test_watchdog_disabled_never_triggers(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    slot_manager = SlotManager(SLOTS_PATH, input_size=64)
+    state_store = StateStore(camera_id=slot_manager.camera_id)
+    state_store.update_batch([
+        (slot.id, slot.label, SlotStatus.EMPTY, 0.9) for slot in slot_manager.slots
+    ])
+    pipeline = Pipeline(
+        source=_NoopSource(),
+        engine=None,
+        slot_manager=slot_manager,
+        state_store=state_store,
+        monitor=Monitor(),
+        frame_interval=1.5,
+        watchdog_enabled=False,
+        watchdog_stale_after=60.0,
+    )
+
+    pipeline._last_frame_at -= 1000.0
+    pipeline._check_watchdog()
+
+    for slot in slot_manager.slots:
+        assert state_store.get_slot(slot.id).status == SlotStatus.EMPTY
