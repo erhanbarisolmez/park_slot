@@ -49,7 +49,7 @@
 
 ## Aşama 3 — Slot Kimliği Normalizasyonu (ADR-002)
 
-> **Durum (2026-11-25): Backend-only çözüm uygulandı, henüz deploy edilmedi.**
+> **Durum (2026-11-25): Tamamlandı ve doğrulandı.**
 > İnceleme, roadmap'in orijinal varsayımını düzeltti: `{cameraCode}-{slotId}`
 > birleşimini backend değil **edge** üretiyormuş (`mqtt_publisher.py`); backend
 > bu string'i hiç parçalamadan doğrudan map key'i olarak kullanıyormuş. Bu
@@ -64,6 +64,13 @@
 > sonraki event'inde kendiliğinden (lazy) yeni formata taşınıyor. selfpark-backend
 > commit `88ba948`. Testler: 13 mevcut `ParkOccupancyManagerTest` değişmeden
 > geçiyor + 4 yeni senaryo + yeni `SlotIdentityResolverTest` (4 test) = 86 test yeşil.
+> Backend bu projede ArgoCD/k8s değil doğrudan docker-compose ile çalıştığı için
+> deploy = `docker compose up -d --build selfpark-backend`; bu yapıldı, container
+> sağlıklı (`/actuator/health` → `UP`, DB bağlantısı doğrulandı) ve `camera_slot_identity`
+> tablosu hatasız oluştu. `GET /api/v1/parkOccupancy/{parkInfoId}` canlı çıktısında
+> doğrulandı: yeni event alan slotlar kalıcı UUID `parkSlotId` key'ine geçiyor, eski
+> ham `{cameraCode}-{slotId}` key'i siliniyor (çift sayım yok), henüz dokunulmamış
+> slotlar eski formatta kalıp sıradaki event'te kendiliğinden migrate oluyor.
 
 **Hedef:** Kamera değişiminde slot kimliğinin kopmasını önlemek, orphan key birikimini durdurmak.
 **Bağımlılıklar:** Aşama 2 (yeni event formatı slot kimliğini taşıyacağı için, kimlik modeli değişmeden önce event şemasının oturmuş olması mantıklı — ama teknik olarak bağımsız da yürütülebilir, sıralama önerisidir, zorunluluk değildir).

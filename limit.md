@@ -288,6 +288,31 @@ yükseltmesi zamanlaması, `anomaly_detection`'daki boş ML iskeletlerinin
 rebuild edip başlatmak, `GET /api/v1/parkOccupancy/{parkInfoId}` ile
 slot key'lerinin UUID formatına (lazy migration) geçtiğini doğrulamak.
 Hâlâ açık: Kafka RF≥2 zamanlaması, anomaly_detection ML iskeletleri,
-ADR-009'un ne zaman uygulanacağı (çoklu kamera kurulumu planlandığında).                                                                                 
+ADR-009'un ne zaman uygulanacağı (çoklu kamera kurulumu planlandığında).
+
+## 2026-11-25 üçüncü oturum — Aşama 3 deploy + prod doğrulaması tamamlandı
+
+1. `docker compose up -d --build selfpark-backend` ile container `88ba948`
+   ile yeniden oluşturuldu. `camera_slot_identity` tablosu hatasız
+   oluştu, `/actuator/health` → `UP` (DB bağlantısı doğrulandı). Bu
+   depoda backend ArgoCD/k8s değil doğrudan docker-compose ile çalıştığı
+   için bu, "deploy" adımının kendisi.
+2. Kullanıcının paylaştığı `GET /api/v1/parkOccupancy/{parkInfoId}`
+   canlı çıktısı analiz edildi: karışık key formatı gözlendi — yeni
+   event alan slotlar kalıcı UUID `parkSlotId`'ye geçmiş (örn.
+   `CAM-001` S1/S2/S4, `CAM-002` S11/S22/S23/S28/S30, `CAM-003` S7/S8),
+   henüz dokunulmamış slotlar hâlâ eski ham `{cameraCode}-{slotId}`
+   formatında. Kamera+label çiftleri tek tek karşılaştırıldı — ham key
+   ile UUID key aynı slot için asla birlikte bulunmuyor, yani lazy
+   migration çift sayıma yol açmadan eski kaydı siliyor (doğrulandı).
+3. Yeni mint edilen slotlardaki `UNKNOWN` status (`CAM-002` S11/S28/S30,
+   `CAM-003` S7) açıklandı: `upsertSlotLayout` satır 215 — layout kaydı
+   geldi ama henüz detection gelmedi, beklenen geçiş durumu.
+4. Aşama 3 artık **tamamlandı ve doğrulandı** olarak işaretlendi
+   (`IMPLEMENTATION_ROADMAP.md`).
+
+**Yarına/sonraya kalan:** Hâlâ açık — Kafka RF≥2 zamanlaması,
+anomaly_detection ML iskeletleri, ADR-009'un ne zaman uygulanacağı
+(çoklu kamera kurulumu planlandığında).                                                                                 
   
 
