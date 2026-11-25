@@ -248,8 +248,46 @@ kriteri (Kafka topic'leri tüketiliyor, lag ilerliyor) karşılandı.
 
 **Hâlâ açık (önceki oturumlardan, cevaplanmadı):** Kafka RF≥2/çok-broker
 yükseltmesi zamanlaması, `anomaly_detection`'daki boş ML iskeletlerinin
-(`ml/`, `ml_based/`, `rule_based/`) kapsamı. Bir sonraki aşama adayı:
-Aşama 3 (slot kimliği normalizasyonu, ADR-002) veya Aşama 4
-(reconciliation + kamera watchdog, ADR-008).                                                                                 
+(`ml/`, `ml_based/`, `rule_based/`) kapsamı.
+
+---
+
+## 2026-11-25 ikinci oturum — Aşama 3 (slot kimliği normalizasyonu) implemente edildi
+
+1. **Araştırma, roadmap'in varsayımını düzeltti:** `{cameraCode}-{slotId}`
+   birleşimini backend değil edge üretiyormuş — backend bu string'i hiç
+   parçalamadan key olarak kullanıyormuş. Sonuç: çözüm tamamen
+   **backend-only**, `park_slot` reposunda hiçbir değişiklik yok.
+2. **Yeni `camera_slot_identity` tablosu + `SlotIdentityResolver`:**
+   (camera_id, raw_slot_key) → kalıcı `parkSlotId` eşlemesi, auto-mint
+   (ilk görüşte otomatik üretim). `processDetection`/`applySlotChange`/
+   `upsertSlotLayout` artık ham key yerine bu id'yi map key'i olarak
+   kullanıyor; mevcut prod verisi bir sonraki event'te kendiliğinden
+   (lazy) yeni formata taşınıyor.
+3. **Carryover (kamera fiziksel değişimi):** `SlotLayoutEntry`'ye opsiyonel
+   `parkSlotId` alanı — operatör `PUT .../slots/layout` ile eski kimliği
+   expli­çit devralabiliyor, orphan kayıt oluşmuyor. Yeni endpoint YOK,
+   mevcut endpoint genişletildi.
+4. **Testler:** 13 mevcut `ParkOccupancyManagerTest` değişmeden geçti
+   (resolver mock'lanıp "identity passthrough" varsayıldı) + 4 yeni senaryo
+   (mint, lazy migration, carryover, bilinmeyen-id hatası) + yeni
+   `SlotIdentityResolverTest` (4 test, resolver'ın kendi DAO mantığını
+   doğrudan doğruluyor) = 86 test yeşil.
+5. selfpark-backend commit `88ba948`, build+push edildi (henüz deploy
+   edilmedi/container restart yapılmadı).
+6. **Çok kameralı sensör füzyonu sorusu araştırıldı** (kullanıcı: "2 kamera
+   açısı kesişim noktasında aynı park_slot var" senaryosu) — web + kod
+   araştırması, bunun Aşama 3'ten farklı bir problem olduğunu doğruladı
+   (kamera değişimi ≠ iki kameranın aynı anda aynı yeri görmesi). Saha işi
+   (ortak fiziksel referans noktası ölçümü) gerektirdiği için kod değil,
+   **ADR-009** olarak kaydedildi (`ADR_DOCUMENTS.md`) — yerel metre-bazlı
+   ortak koordinat (GPS değil, hassasiyet yetersiz), otomatik birleştirme
+   yok (operatör onaylı carryover zaten yeterli).
+
+**Yarına/sonraya kalan:** selfpark-backend container'ını `88ba948` ile
+rebuild edip başlatmak, `GET /api/v1/parkOccupancy/{parkInfoId}` ile
+slot key'lerinin UUID formatına (lazy migration) geçtiğini doğrulamak.
+Hâlâ açık: Kafka RF≥2 zamanlaması, anomaly_detection ML iskeletleri,
+ADR-009'un ne zaman uygulanacağı (çoklu kamera kurulumu planlandığında).                                                                                 
   
 

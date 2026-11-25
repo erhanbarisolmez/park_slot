@@ -180,6 +180,29 @@ CREATE TABLE outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, slot_id INTEGER, stat
 
 ---
 
+## ADR-009: Çok Kameralı Sensör Füzyonu için Ortak Fiziksel Koordinat Sistemi
+
+**Context:** Aşama 3 (ADR-002), bir kameranın fiziksel olarak değiştiği senaryoyu çözdü (`camera_slot_identity` + kalıcı `parkSlotId`, carryover ile). Ama farklı bir senaryo hâlâ çözülmedi: birden fazla kamera AYNI ANDA aynı fiziksel slotu farklı açılardan görürse (örn. geniş bir park alanının iki kamerayla kapsanması), her kamera kendi (camera, raw_slot_key) çifti için bağımsız bir `parkSlotId` auto-mint eder — aynı fiziksel yer için iki ayrı kayıt oluşur (çift sayım riski).
+
+**Problem:** Hangi iki (kamera, raw_slot_key) çiftinin aynı fiziksel yeri temsil ettiğini anlamanın bugün bir yolu yok. `tools/mark_perspective.py`'deki her kameranın `perspective_transform`'u, o kameranın kendi karesinde gözle seçilen 4 köşeyle hesaplanıyor (doğrulandı: `config/slots/cam1.json`/`cam2.json`/`cam3.json`'daki 3x3 matrisler birbirinden bağımsız, ortak bir fiziksel referans noktasına oturmuyor) — dolayısıyla iki kameranın minimap x/y'leri karşılaştırılabilir değil.
+
+**Araştırma notu (2026-11-25):** Üretim sistemlerinde genel yaklaşım "asset'i (fiziksel slot) modelle, sensörü değil" — slotlar ortak bir ground-plane/site koordinatında (genelde GeoJSON + homografi, GNSS ile füzyon) tanımlanır, kameralar bu ortak düzleme kalibre edilir. Çapraz-sensör eşleştirme üretim sistemlerinde her zaman insan onaylı yapılır (geometri/yakınlık bazlı öneri + operatör onayı) — otomatik birleştirme, yanlış-birleşme riski nedeniyle tercih edilmiyor.
+
+**Options:**
+1. Hiçbir şey yapma — çakışan görüş alanlı kamera kurulumu şimdilik desteklenmiyor kabul edilsin.
+2. GPS lat/lng ile her slota koordinat ata (`ParkInfo.lat/lng`'nin slot seviyesine indirgenmesi).
+3. Yerel (metre bazlı), saha-ölçümlü ortak referans: `mark_perspective.py`'ye kameralar arası paylaşılan 1-2 fiziksel referans noktası (örn. bir köşe direği, boyalı işaret) eklenir, bir kez şerit metre/lazerle ölçülür; tüm kameraların homografisi bu ortak düzleme oturtulur. Sonuç, `parkSlotId` başına kalıcı bir `siteX`/`siteY` (metre) olarak saklanır — `camera_slot_identity`'den ayrı, yeni bir `park_slot` kaydı (backend).
+
+**Decision:** Seçenek 3. GPS (Seçenek 2) reddedildi — tipik GPS hassasiyeti (3-5m) bitişik park yerlerini (~2.5m) ayırt edemez. Yakınlık-bazlı otomatik "bunlar aynı slot" tespiti/birleştirmesi bilerek KAPSAM DIŞI bırakıldı — Aşama 3'te kurulan operatör-onaylı carryover mekanizması (`PUT /api/v0/camera/{cameraCode}/slots/layout` + `parkSlotId`) bu iş için zaten yeterli bir araç; "bunlar aynı olabilir" diye işaretleyen bir yakınlık sorgusu/rapor ayrı, sonraki bir karar.
+
+**Trade-offs:** Saha ekibinin kurulumda birkaç fiziksel referans noktasını bir kez ölçmesi gerekir — ama bu, zaten var olan `mark_perspective.py` adımına (4 köşe tıklama) doğal bir ek, yeni bir araç/süreç değil.
+
+**Consequences:** Acil değil — bugün tek kameralı her park için Aşama 3 çözümü yeterli. Çakışan görüş alanlı çoklu kamera kurulumu planlandığında (`mark_perspective.py` genişletmesi + backend'de `park_slot` tablosu) uygulanmalı.
+
+**Rejected Alternatives:** Seçenek 1 (hiçbir şey yapmama) kalıcı bir çözüm değil, sadece bugünkü (tek-kamera-per-alan) durumu sürdürür — not olarak bırakıldı ama gerçek bir çoklu-kamera-kesişimi kurulumunda yetersiz kalacağı biliniyor.
+
+---
+
 ## Kaynaklar (Section 8 doğrulaması)
 
 - Kafka idempotent producer gereksinimleri (`acks=all`, `retries>0`, `max.in.flight.requests.per.connection≤5`): [Confluent — Optimizing for Durability](https://docs.confluent.io/cloud/current/client-apps/optimizing/durability.md), [Conduktor — Idempotent Producers](https://docs.conduktor.io/learn/advanced/producers/idempotent-producers)

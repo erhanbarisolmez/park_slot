@@ -49,7 +49,21 @@
 
 ## Aşama 3 — Slot Kimliği Normalizasyonu (ADR-002)
 
-> **Not (2026-11-24 doğrulama turu):** Backend'de bu aşamaya kısmi bir zemin hazırlığı zaten var (`24ab3ad`: `ParkSlotOccupancy.lastCameraId`/`lastCameraCode` alanları, entity yorumunda bare-slotIndex niyeti) — ama gerçek anahtar normalizasyonu (ADR-002 Seçenek 3: kalıcı `parkSlotId`) henüz yapılmadı, `processDetection` hâlâ ham `{cameraCode}-{slotId}` string'ini key olarak kullanıyor. Bu aşama hâlâ gerekli.
+> **Durum (2026-11-25): Backend-only çözüm uygulandı, henüz deploy edilmedi.**
+> İnceleme, roadmap'in orijinal varsayımını düzeltti: `{cameraCode}-{slotId}`
+> birleşimini backend değil **edge** üretiyormuş (`mqtt_publisher.py`); backend
+> bu string'i hiç parçalamadan doğrudan map key'i olarak kullanıyormuş. Bu
+> sayede çözüm tamamen backend-only oldu — `park_slot` (edge) reposunda
+> hiçbir değişiklik gerekmedi, aşağıdaki "Değişmesi beklenen modüller"
+> listesindeki edge kısmı (`tools/register_slot_layout.py`) atlandı.
+> Yeni `camera_slot_identity` tablosu + `SlotIdentityResolver`
+> (camera_id, raw_slot_key) → kalıcı `parkSlotId` eşlemesini auto-mint ile
+> kurar; `SlotLayoutEntry`'ye eklenen opsiyonel `parkSlotId` alanı, kamera
+> değişiminde operatörün eski kimliği devralmasını (carryover) sağlar.
+> Mevcut prod verisi ayrı bir migrasyon script'i olmadan, her slot bir
+> sonraki event'inde kendiliğinden (lazy) yeni formata taşınıyor. selfpark-backend
+> commit `88ba948`. Testler: 13 mevcut `ParkOccupancyManagerTest` değişmeden
+> geçiyor + 4 yeni senaryo + yeni `SlotIdentityResolverTest` (4 test) = 86 test yeşil.
 
 **Hedef:** Kamera değişiminde slot kimliğinin kopmasını önlemek, orphan key birikimini durdurmak.
 **Bağımlılıklar:** Aşama 2 (yeni event formatı slot kimliğini taşıyacağı için, kimlik modeli değişmeden önce event şemasının oturmuş olması mantıklı — ama teknik olarak bağımsız da yürütülebilir, sıralama önerisidir, zorunluluk değildir).
@@ -94,3 +108,11 @@ Aşama 5 (temizlik) — herhangi bir zamanda, bağımsız
 Aşama 2 tamamlanmadan Aşama 4'teki snapshot event'i taşınacak bir topic/consumer bulamaz; Aşama 3, Aşama 2'nin event şemasına (slot kimliği taşıyan alanlar) bağımlı olduğu için ondan sonra önerilir ama kesin bir teknik zorunluluk değildir.
 
 `anomaly_detection` genişlemesi (GAP #11, P3) bu roadmap'e dahil edilmedi — Aşama 2 tamamlanıp Kafka gerçekten tüketilir hale geldikten sonra, ayrı bir karar/roadmap olarak ele alınmalı.
+
+Çok kameralı sensör füzyonu (birden fazla kameranın AYNI ANDA aynı fiziksel
+slotu görmesi — Aşama 3'ün çözdüğü "kamera değişti" senaryosundan farklı)
+araştırıldı ve **ADR-009** olarak kaydedildi (bkz. `ADR_DOCUMENTS.md`).
+Saha işi (kameralar arası ortak fiziksel referans noktası ölçümü,
+`mark_perspective.py` genişletmesi) gerektirdiği için bu roadmap'e dahil
+edilmedi — çakışan görüş alanlı çoklu kamera kurulumu planlandığında ayrı
+bir faz olarak ele alınmalı.
