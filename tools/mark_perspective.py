@@ -20,6 +20,7 @@ Kullanım:
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 import cv2
@@ -150,6 +151,10 @@ def main():
         return
 
     config_data["perspective_transform"] = compute_homography(points)
+    # GAP #10: mapping değişikliklerinin izlenebilirliği için - bu yazım da
+    # bir mapping güncellemesi (perspective_transform), version artırılır.
+    config_data["version"] = config_data.get("version", 0) + 1
+    config_data["updated_at"] = time.time()
 
     with open(slots_path, "w", encoding="utf-8") as f:
         json.dump(config_data, f, indent=2, ensure_ascii=False)

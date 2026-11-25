@@ -14,6 +14,7 @@ Kontroller:
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -149,12 +150,16 @@ class SlotAnnotator:
         # Dosyada zaten perspective_transform varsa (tools/mark_perspective.py
         # ile ayarlanmış kuşbakışı referans noktaları) koru - slotları yeniden
         # çizmek bu kalibrasyonu silmemeli, aksi halde minimap ve toplu
-        # engellenme tespitinin fiziksel yakınlık filtresi bozulur.
+        # engellenme tespitinin fiziksel yakınlık filtresi bozulur. Aynı şekilde
+        # version (GAP #10) de korunup artırılır - her mapping yazımı izlenebilir olsun.
         existing_perspective_transform = None
+        existing_version = 0
         if path.exists():
             try:
                 with open(path, "r", encoding="utf-8") as f:
-                    existing_perspective_transform = json.load(f).get("perspective_transform")
+                    existing_data = json.load(f)
+                existing_perspective_transform = existing_data.get("perspective_transform")
+                existing_version = existing_data.get("version", 0)
             except (json.JSONDecodeError, OSError):
                 pass
 
@@ -166,6 +171,8 @@ class SlotAnnotator:
             image_height=h,
             slots=self._slots,
             perspective_transform=existing_perspective_transform,
+            version=existing_version + 1,
+            updated_at=time.time(),
         )
 
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -150,6 +150,35 @@
 
 ---
 
+## Aşama 6 — Roadmap'e girmemiş kalan Gap'ler (GAP #6 yarısı, #7, #10)
+
+> **Durum (2026-11-25): Tamamlandı.** 2026-11-25'teki tam denetimde, Aşama 0-5'in
+> `ARCHITECTURE_GAP_ANALYSIS.md`'deki 11 maddenin 3'ünü (6'nın yarısı, 7, 10) hiç
+> kapsamadığı fark edildi — GAP #8 (Kafka RF≥2) ve #11 (anomaly_detection) kullanıcı
+> kararıyla bilerek ayrı/sonraki faz olarak bırakılmıştı, ama 6/7/10 hiç gündeme
+> gelmemişti. Bu aşama o üçünü kapatıyor:
+> - **GAP #6 (yarısı, selfpark-backend commit `1601329`):** `upsertSlotStatus`
+>   artık `SlotTransition(becameAvailable, becameOccupied)` döndürüyor;
+>   EMPTY→OCCUPIED geçişi `notifyInterestedUsers`'ın simetriği
+>   `notifyOccupancyFilled`'ı tetikliyor (aynı TODO-stub konvansiyonu - henüz
+>   hedefleme/abonelik kuralı yok, sadece çağrı noktası var). 3 yeni test.
+> - **GAP #7 (selfpark-backend commit `1601329`):** `MqttConnectOptions.setAutomaticReconnect(true)`
+>   + `maxReconnectDelay=30s`. Kaynak kodu doğrulandı (spring-integration-mqtt 6.3.1):
+>   `MqttPahoMessageDrivenChannelAdapter`'ın kendi periyodik reconnect zamanlayıcısı
+>   yok, `connectionLost()` sadece loglayıp event yayınlıyor - bu ayar olmadan broker
+>   kesintisinde bağlantı restart'a kadar KALICI kopuk kalıyordu. `connectComplete`
+>   reconnect sonrası otomatik re-subscribe ettiği için ek değişiklik gerekmedi.
+>   `mqttInputChannel`'ı `ExecutorChannel`'a çevirme kısmı bilerek YAPILMADI - kanıtlanmış
+>   bir thread-starvation/backpressure sorunu yok, sıralama garantisini riske atardı.
+> - **GAP #10 (park_slot commit — bu aşamada):** `CameraSlotConfig`'e `version`/`updated_at`
+>   alanları eklendi; `annotation/gui.py` (`save_to_file`), `tools/mark_perspective.py`,
+>   `tools/audit_slots.py --fix` - config dosyasını yazan 3 araç da artık her yazımda
+>   `version`'ı artırıp `updated_at`'i güncelliyor. Sadece izlenebilirlik - `SlotManager`
+>   bu alanları okumuyor, davranış değişmiyor. 2 yeni test (`test_gui.py`).
+> - Backend: 89 test yeşil. park_slot: 125 test yeşil.
+
+---
+
 ## Bağımlılık Özeti
 
 ```

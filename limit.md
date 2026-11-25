@@ -381,6 +381,34 @@ tamamlandı. Hâlâ açık: Kafka RF≥2 zamanlaması (ayrı faz),
 anomaly_detection ML iskeletleri, ADR-009'un zamanlaması, GAP #9'daki DLQ
 üretim yolu tekrarı.
 
+## 2026-11-25 yedinci oturum — Aşama 6: roadmap'e girmemiş gap'ler (6/7/10) kapatıldı
+
+Kullanıcı tam denetim istedi ("backend + park slot + kafka + mqtt kontrol
+et") — bu denetimde Aşama 0-5'in gap tablosunun 3 maddesini (6'nın yarısı,
+7, 10) hiç kapsamadığı fark edildi (GAP #8/#11 ise bilerek ayrı bırakılmıştı,
+onlar farklı). Ayrıca backend container'ının Aşama 5 kodunu (4d162d6) henüz
+çalıştırmadığı (container Aşama 3'ten kalmıştı) fark edilip rebuild edildi.
+
+1. **GAP #6 (selfpark-backend `1601329`):** `upsertSlotStatus` artık
+   `SlotTransition(becameAvailable, becameOccupied)` döndürüyor -
+   EMPTY→OCCUPIED de `notifyInterestedUsers`'ın simetriği
+   `notifyOccupancyFilled`'ı (aynı TODO-stub) tetikliyor. 3 yeni test.
+2. **GAP #7 (aynı commit):** `setAutomaticReconnect(true)` + `maxReconnectDelay=30s`
+   - spring-integration-mqtt 6.3.1 kaynak kodu okunup doğrulandı: bu adapter'ın
+   kendi reconnect zamanlayıcısı yok, bu ayar olmadan broker kesintisi KALICI
+   kopukluk demekti. `mqttInputChannel`→`ExecutorChannel` KASITLI yapılmadı
+   (kanıtlanmış sorun yok, sıralama riski var).
+3. **GAP #10 (park_slot):** `CameraSlotConfig`'e `version`/`updated_at` eklendi;
+   3 yazan araç (`gui.py save_to_file`, `mark_perspective.py`, `audit_slots.py --fix`)
+   güncellendi. 2 yeni test.
+4. Backend: 89 test yeşil, rebuild edilip `docker compose up -d --build` ile
+   deploy edildi. park_slot: 125 test yeşil (henüz CI/ArgoCD'ye push
+   edilmedi bu oturumda - edge tarafı sadece local).
+
+**Yarına/sonraya kalan:** GAP tablosunun artık SADECE #8 (Kafka RF≥2, ayrı
+faz) ve #11 (anomaly_detection, ayrı karar) açık kaldı - ikisi de bilerek
+deferred. ADR-009'un zamanlaması hâlâ açık.
+
 ## 2026-11-25 altıncı oturum — Aşama 4 prod doğrulaması
 
 CI, `964a893`'ü otomatik build/push etti; ArgoCD sync etti (`Synced`/`Healthy`,

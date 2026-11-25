@@ -14,6 +14,7 @@ Kullanım:
 
 import argparse
 import json
+import time
 from glob import glob
 from pathlib import Path
 
@@ -41,6 +42,9 @@ def audit_file(path: Path, fix: bool) -> int:
             print(f"  {path.name}: slot {label} kendi kendini kesiyor (bozuk polygon)")
 
     if fix and broken:
+        # GAP #10: polygon düzeltmesi de bir mapping değişikliği - version artırılır.
+        config["version"] = config.get("version", 0) + 1
+        config["updated_at"] = time.time()
         with open(path, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2)
 

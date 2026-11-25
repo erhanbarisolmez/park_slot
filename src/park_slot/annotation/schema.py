@@ -50,13 +50,22 @@ class SlotState(BaseModel):
 
 
 class CameraSlotConfig(BaseModel):
-    """Bir kameraya ait tüm slotların konfigürasyonu."""
+    """Bir kameraya ait tüm slotların konfigürasyonu.
+
+    version/updated_at: GAP #10 - mapping (slot polygon/perspective_transform)
+    her yazıldığında (tools/annotate.py, tools/mark_perspective.py,
+    tools/audit_slots.py --fix) artırılır/güncellenir. Tek amacı izlenebilirlik
+    (debug/denetim) - SlotManager okurken bu alanları kullanmaz, davranışı
+    etkilemez.
+    """
     camera_id: str
     source_url: str = ""
     image_width: int = 1280
     image_height: int = 720
     slots: list[SlotDefinition] = []
     perspective_transform: Optional[list[list[float]]] = None
+    version: int = 1
+    updated_at: Optional[float] = None
 
 
 class ParkingStatus(BaseModel):
