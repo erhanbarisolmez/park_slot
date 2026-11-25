@@ -179,6 +179,101 @@
 
 ---
 
+## Aşama 7 — Version/Sequence Bütünlüğü ve JSONB Lost-Update Düzeltmesi (GAP #12, #13)
+
+> **Durum (2026-11-25): PLAN — henüz uygulanmadı.** 2026-11-25 dördüncü tur
+> denetiminde (bkz. ARCHITECTURE_GAP_ANALYSIS.md madde 12/13), daha önce
+> "version var" sanılan kontrolün hem edge'de (restart/retention'da sıfırlanıyor)
+> hem backend'de (hiç okunmuyor) fiilen çalışmadığı doğrulandı. Bu aşama kod
+> değişikliği İÇERMİYOR — sadece uygulama planı.
+
+**Hedef:** Edge→backend zincirinde "hangi event daha yeni" sorusunun, restart'tan
+ve outbox retention temizliğinden bağımsız, güvenilir bir cevabı olmasını
+sağlamak; backend'de aynı parkın farklı slotlarına eşzamanlı yazımda
+lost-update'i yapısal olarak ortadan kaldırmak. `replicas>1`/Kafka listener
+`concurrency>1`'e geçmeden ÖNCE kapatılması gereken P0 önkoşul (GAP #14/#15
+ayrı, P1, bu planın kapsamı dışında).
+
+**Bağımlılıklar:** Yok (bağımsız), ama Aşama 8 (replika genişlemesi, henüz
+roadmap'te yok) için sert önkoşul.
+
+**Kapsam / değişecek dosyalar:**
+
+*Edge (park_slot):*
+- `src/park_slot/services/outbox.py`: `record_change`, slot-version'ı artık
+  `MAX(version) WHERE slot_id` (outbox geçmişinden, retention'la silinebilir)
+  ile DEĞİL, yeni `slot_sequence` tablosundan (`slot_id PRIMARY KEY, epoch TEXT,
+  seq INTEGER` — tek satır/slot, `purge_sent_older_than`'in asla dokunmadığı
+  ayrı bir tablo) hesaplar. `epoch`: process/pod başlangıcında bir kez üretilir
+  (örn. `uuid4()`); `seq`: o epoch içinde slot başına monoton artar.
+- `src/park_slot/services/mqtt_publisher.py`: `publish_slot_changed` ve
+  `publish_raw` payload'larına `epoch`/`seq` eklenir (snapshot dahil —
+  opsiyonel/default'lu, geriye uyumlu).
+- `k8s/cam1.yaml`, `cam2.yaml`, `cam3.yaml`: outbox veri dizini için
+  `data-logs`/`labeled-data` ile AYNI desende yeni bir `hostPath` volume +
+  `volumeMount` (örn. `/var/lib/park-slot/cam{N}/outbox` → `/app/data`) —
+  Python kodu değil, salt deploy config değişikliği.
+
+*Backend (selfpark-backend):*
+- `CameraSlotChangedEvent.avsc` / `CameraDetectionEvent.avsc`: opsiyonel
+  `epoch` alanı eklenir (`version` alanı zaten var, anlamı `seq`'e evrilir —
+  şema geriye uyumlu, yeni alan default'lu).
+- **Şema geçişi (JSONB → ilişkisel tablo):** `ParkSlotOccupancy.slots` (tek
+  `jsonb` kolon, "oku-değiştir-tümünü-geri-yaz") yerine yeni `park_slot_state`
+  tablosu: `park_info_id, slot_id, status, epoch, seq, camera_id, camera_code,
+  x, y, label, updated_at` — `PRIMARY KEY(park_info_id, slot_id)`. Her slot
+  kendi satırı; yazım `UPDATE ... WHERE seq daha eski` (veya `INSERT ...
+  ON CONFLICT DO UPDATE WHERE excluded.seq > park_slot_state.seq`) ile DB-level
+  atomik koşullu upsert — lost-update yapısal olarak imkansız hale gelir.
+- `ParkOccupancyManager.upsertSlotStatus`: koşulsuz `slots.put(...)` yerine
+  yeni `ParkSlotStateDao.upsertIfNewer(...)` çağrısı.
+- `getOccupancy`: `park_slot_state`'ten `parkInfoId` bazlı toplanıp DTO'ya
+  derlenir; eski JSONB okuma yolu kaldırılır (kolon geçiş süresince silinmez).
+- `CameraSlotChangedConsumer`/`CameraSlotChangeConsumer`: `event.getVersion()`
+  artık gerçekten `applySlotChange`/`processDetection`'a geçiriliyor.
+
+**Geriye uyumluluk / migrasyon:**
+- Mevcut `park_slot_occupancy.slots` JSONB verisi bir seferlik migrasyon
+  script'iyle `park_slot_state`'e kopyalanır (`epoch=""`, `seq=0`) — Aşama
+  3'teki lazy-migration deseniyle aynı mantık: ilk gerçek event (`seq>0`)
+  geldiğinde otomatik üzerine yazılır.
+- `epoch`/`seq` göndermeyen eski formatlı event'ler (henüz deploy edilmemiş
+  kameralar) `epoch=""`, `seq=event.getVersion()` olarak yorumlanır — karışık
+  sürümlü filo (bazı kameralar yeni, bazıları eski format) sorunsuz çalışır.
+- `ParkSlotOccupancy` entity'si (JSONB kolonuyla) geçiş süresince silinmez —
+  rollback güvencesi; temizliği ayrı bir sonraki aşamanın konusu.
+
+**Test senaryoları:**
+1. Edge restart sonrası version: `slot_sequence` tablosu (retention'dan ayrı,
+   kalıcı) restart simülasyonunda (yeni instance, aynı dosya) aynı değerden
+   devam ediyor mu.
+2. Eşzamanlı slot güncellemesi: aynı `parkInfoId`'nin iki farklı `slotId`'si
+   eşzamanlı (concurrency=2 simülasyonu) işlendiğinde her iki slotun da DB'de
+   doğru göründüğü — bu test, yeni tabloya geçmeden ÖNCE kırmızı (lost-update
+   regresyonu) yazılıp geçişten SONRA yeşile dönmeli.
+3. Snapshot'ın yeni deltayı ezmemesi: `(epoch,seq)` daha düşük bir snapshot,
+   DB'de zaten daha yüksek `(epoch,seq)`'li bir delta'dan SONRA işlendiğinde
+   DB'nin değişmediği.
+4. Outbox retention purge sonrası version: 7 günlük `purge_sent_older_than`
+   çalıştıktan sonra bir slotun `seq`'inin SIFIRLANMADIĞI (yeni tablo
+   purge'den etkilenmemeli).
+5. Karışık filo: `epoch`/`seq` göndermeyen eski formatlı event + yeni formatlı
+   event aynı slot için art arda geldiğinde DB'nin tutarlı kaldığı.
+
+**Kabul kriterleri:** Edge pod'u herhangi bir sebeple (restart, reschedule,
+7+ gün retention purge) yeniden başlasa da üretilen sequence hiçbir koşulda
+geriye gitmiyor; backend hiçbir yazımda `(epoch,seq)` kontrolü yapmadan DB'ye
+yazmıyor; aynı parkın farklı slotlarına eşzamanlı (concurrency>1 simülasyonu)
+yapılan güncellemeler birbirini kaybetmiyor.
+
+**Risk:** Yüksek — şema geçişi (JSONB→ilişkisel tablo) ve concurrency semantiği
+değişiyor; staging'de yük testiyle (eşzamanlı çoklu slot güncellemesi)
+doğrulanmalı; rollback planı (eski JSONB kolonunun geçiş süresince silinmemesi)
+zorunlu. GAP #14/#15 (WS fan-out, MQTT manualAcks/clientId) bilerek bu planın
+KAPSAMI DIŞINDA — `replicas>1`'e geçiş kararı alındığında ayrı bir aşama.
+
+---
+
 ## Bağımlılık Özeti
 
 ```
@@ -186,6 +281,10 @@ Aşama 0 (hızlı fix) ──▶ Aşama 1 (SQLite outbox) ──▶ Aşama 2 (de
                                                                                                   └─▶ Aşama 4 (reconciliation + watchdog)
 
 Aşama 5 (temizlik) — herhangi bir zamanda, bağımsız
+
+Aşama 7 (version/sequence + JSONB lost-update, PLAN) — Aşama 2'nin event
+şemasına ek alan ekliyor, bağımsız yürütülebilir ama replicas>1/concurrency>1
+öncesi ZORUNLU önkoşul.
 ```
 
 Aşama 2 tamamlanmadan Aşama 4'teki snapshot event'i taşınacak bir topic/consumer bulamaz; Aşama 3, Aşama 2'nin event şemasına (slot kimliği taşıyan alanlar) bağımlı olduğu için ondan sonra önerilir ama kesin bir teknik zorunluluk değildir.
