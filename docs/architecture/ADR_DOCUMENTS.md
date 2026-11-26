@@ -215,6 +215,113 @@ CREATE TABLE outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, slot_id INTEGER, stat
 
 ---
 
+## ADR-010: Park Occupancy Read-Scaling — Redis Şimdilik Ertelendi
+
+**Context:** Mobil REST polling (`GET /api/v1/parkOccupancy/{parkInfoId}`) her
+çağrıda Postgres'e gidiyor; kullanıcı production'da bunun darboğaz olabileceğini
+öngörüp Kafka'dan gelen event'lerin Redis'e write-through cache'lenmesini
+önerdi. Bir Plan agent tam bir uygulama tasarımı üretti (facade-sınırı
+`ParkOccupancyCacheService`, 3 yazım noktasında write-through, okuma yolunda
+cache-aside, TTL=60s, Redis erişilemezse fail-open). Ama: bugünkü DB rakamları
+gerçek bir yük sorununu KANITLAMIYOR (doğrulandı: `pg_stat_user_tables` →
+`park_slot_occupancy` `n_live_tup=1`, tek satırlık dev ortamı) ve proje zaten
+**ADR-007**'de (farklı bir amaç için — WS session fan-out, Redis değil) aynı
+ilkeyi benimsemişti: "kanıtlanmamış ihtiyaca göre altyapı ekleme." Bu ADR,
+ADR-007'yi TERSİNE ÇEVİRMİYOR — iki karar birbirinden bağımsız kullanım
+senaryolarını (WS fan-out vs. REST read-cache) ele alıyor, ama aynı ilkeyi
+tekrar uyguluyor.
+
+**Problem:** Redis'i şimdi mi eklemeli, yoksa önce daha ucuz/altyapısız
+adımlarla mı ilerlemeli?
+
+**Decision:** Redis'i ŞİMDİ EKLEME. Kademeli, her adımı bir öncekinin
+yetersizliğiyle gerekçelenen bir eskalasyon sırası izle:
+
+0. **Koşullu upsert (zaten Aşama 7'nin kapsamında):** `(epoch,seq)` koşullu
+   upsert, değişmeyen periyodik snapshot'larda 0 satır güncelleyerek gereksiz
+   DB yazımını zaten engelliyor — ayrı bir iş kalemi değil.
+1. **Ölçüm (GAP #19):** `http_server_requests_seconds` metriği (istek
+   sayısı + p95) Micrometer/Actuator/Prometheus üzerinden ZATEN toplanıyor
+   (`application.yml:363-384`) — sadece Grafana'da görünür hale getirilmeli.
+   DB sorgu sayısı için Hibernate `generate_statistics=true` +
+   `HibernateMetrics` binder eklenmeli (küçük, ~10 satır config). Üretim
+   kararları (Redis dahil) bundan sonra bu verilerle verilecek.
+2. **`/summary` endpoint'i (altyapısız):** `GET
+   /api/v1/parkOccupancy/{parkInfoId}/summary` — sadece `available_count,
+   capacity, updated_at` döner; tam `slots` listesi mevcut detay
+   endpoint'inde kalır. Sadece özet gösteren client'lar (örn. harita rozeti)
+   tam payload'ı çekmek zorunda kalmaz.
+3. **HTTP seviyesinde cache (altyapısız):** `Cache-Control` + `ETag` —
+   client değişmeyen veri için `304 Not Modified` alır, payload transferi
+   azalır, yeni bir bileşen gerekmez.
+4. **Pod-içi Caffeine cache (çok kısa TTL, 1-2 sn):** aynı `parkInfoId`'ye
+   kısa pencerede gelen eşzamanlı poll'ları DB'ye gitmeden yanıtlar; backend
+   bugün tek instance olduğu için instance'lar arası tutarsızlık riski yok;
+   TTL 1-2 sn olduğu için bayatlık pratikte önemsiz.
+5. **Redis — yalnızca aşağıdaki tetikleyicilerden biri gerçekleşirse:**
+
+**Tetikleyici eşikler (başlangıç, ilk ölçümlerden sonra güncellenecek):**
+- `GET /api/v1/parkOccupancy/{parkInfoId}` p95 gecikmesi, 1-4 adımları
+  uygulandıktan SONRA bile > 200ms, VEYA
+- HikariCP aktif bağlantı kullanımı sürekli (10 dk+) > %80, VEYA
+- Konuma göre "yakın lotlar" (nearby/geo-based search) özelliği yol haritasına
+  girerse — bu, bugünkü tek-park-bazlı polling'den çok farklı bir sorgu
+  paterni (çoklu park, geo-sorgu) getirir ve kendi başına cache ihtiyacını
+  yeniden değerlendirmeyi gerektirir.
+
+**Consequences:** Redis bugün eklenmiyor; ADR-007 ile tutarlı. Adım 1
+tamamlanmadan hiçbir eşik gerçek veriyle doğrulanamaz — bu adım diğerlerinden
+önce yapılmalı.
+
+**Rejected (şimdilik):** Plan agent'ın ürettiği tam Redis write-through
+tasarımı — aşağıda "Aday Tasarım" olarak saklanıyor.
+
+**Appendix — Aday Tasarım (Redis, PLANLANMADI, bir tetikleyici gerçekleşirse
+uygulama öncesi YENİDEN DEĞERLENDİRİLECEK):** Orijinal tasarım, cache yazımını
+Spring'in `@Transactional` DB-yazım yolunun İÇİNE gömüyordu (uygulama-içi
+write-through) — bu, Postgres yazımı ile Redis yazımı arasında bir **dual-write
+riski** taşır (biri başarılı, diğeri başarısız olabilir, iki store birbirinden
+bağımsız commit/fail olur). **Tercih edilen model şudur:** Redis'i ayrı,
+bağımsız bir YAZICI besler — bu yazıcı Kafka'dan DOĞRUDAN okur (Postgres
+yazıcısıyla aynı veya koordine bir consumer group'ta), aynı `(epoch,seq)`
+koşullu yazım mantığını kendi başına uygular. Böylece Redis ve Postgres, aynı
+olay kaynağından (Kafka) birbirinden bağımsız iki projeksiyon olur — biri
+diğerine yazarak değil, ikisi de aynı gerçeğin kendi kopyasını üreterek.
+Tasarımın geri kalanı (key=`parkOccupancy:{parkInfoId}`, JSON serileştirme,
+TTL=60s güvenlik ağı, Redis erişilemezse fail-open) değişmeden kalır. Tam
+detay bu konuşmanın Plan agent çıktısında; tetiklenirse bu appendix
+genişletilip güncellenecek.
+
+## ADR-011: Edge→Merkez Topoloji Konfigürasyon Dağıtımı (Faz 3, henüz
+uygulanmadı, kod değişikliği yok)
+
+**Context:** Park alanındaki slot/ROI tabloları (kameraların neyi nerede
+gördüğü) bugün edge'den beslenir — edge, topolojinin kaynağı. Merkez
+(backend), bu topolojiyi yalnızca tek yönlü, manuel bir adımla
+(`register_slot_layout.py`) öğrenir (bkz. `CURRENT_STATE.md` §8). Ters yön —
+merkezden edge'e topoloji config dağıtımı — hiç yok.
+
+**Problem:** Edge'deki bir "lot toplayıcı" bileşeni (kameraların slot/ROI
+tanımlarını derleyip tek bir topoloji olarak sunan bileşen) ile merkezin aynı
+topoloji SÜRÜMÜNÜ kullandığından nasıl emin olunur? Bugün bu garanti yok —
+edge'de bir ROI değişip merkeze manuel adımla yansıtılmazsa, iki taraf
+sessizce farklı topolojilerde çalışabilir.
+
+**Decision (Faz 3 — ileride, bu turda kod değişikliği yok):** Merkezden
+edge'e bir topoloji config dağıtım yolu eklenecek (örn. edge'in başlangıçta
+veya periyodik olarak merkezden `.../config` benzeri bir endpoint'ten kendi
+topoloji sürümünü çekmesi/doğrulaması). Edge'deki lot toplayıcı bileşeni ile
+merkezin topoloji sürüm numarasını karşılaştırıp uyuşmazlıkta alarm/log
+üretmesi hedeflenir — tam API şekli, versiyon karşılaştırma mekanizması ve
+`register_slot_layout.py` ile ilişkisi Faz 3'te detaylandırılacak.
+
+**Consequences:** Bugün hiçbir aksiyon yok. Bu ADR, ileride bu konuya
+dönüldüğünde başlangıç noktası olarak kayıt altına alınıyor; GAP #4
+(kamera değişiminde orphan key) ve ADR-002 ile ilişkili ama onların kapsamını
+genişletmiyor — ayrı bir karar.
+
+---
+
 ## Kaynaklar (Section 8 doğrulaması)
 
 - Kafka idempotent producer gereksinimleri (`acks=all`, `retries>0`, `max.in.flight.requests.per.connection≤5`): [Confluent — Optimizing for Durability](https://docs.confluent.io/cloud/current/client-apps/optimizing/durability.md), [Conduktor — Idempotent Producers](https://docs.conduktor.io/learn/advanced/producers/idempotent-producers)

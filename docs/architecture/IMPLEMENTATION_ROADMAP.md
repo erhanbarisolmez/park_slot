@@ -181,15 +181,20 @@
 
 ## Aşama 7 — Version/Sequence Bütünlüğü ve JSONB Lost-Update Düzeltmesi (GAP #12, #13)
 
-> **Durum (2026-11-26): PLAN v3 — henüz uygulanmadı.** v1 (2026-11-25) →
+> **Durum (2026-11-26): PLAN v4 — henüz uygulanmadı.** v1 (2026-11-25) →
 > v2: `epoch`'un `uuid4()` olması ile backend'in sadece `seq`'e bakan örnek
 > SQL'i arasındaki tutarsızlık düzeltildi (wall-clock epoch + tuple
 > karşılaştırması). v2 → v3: ileri saat kayması, kamera sahiplik kontrolü
 > (GAP #4 ile karıştırılmaması), legacy modda epoch/seq sıfırlama, enforce
 > geçiş kriterinin somutlaştırılması, snapshot'ın seq üretmemesi, dual-write
-> atomikliği ve tam test listesi eklendi. Bu aşama kod değişikliği
-> İÇERMİYOR — sadece uygulama planı; onaylandıktan sonra PR (a)'dan
-> başlanacak.
+> atomikliği ve tam test listesi eklendi. v3 → v4: Redis cache tasarımı
+> araştırılırken bulunan iki AYRI sorun buraya eklendi — (1) durum değişimi
+> ile kamera tazeliğinin ayrımı (netleştirme, GAP #12/#13'ün doğal yan
+> etkisiyle zaten çözülüyor), (2) WS broadcast/notify hook'larının transaction
+> commit'inden ÖNCE tetiklenmesi (YENİ P0, `AFTER_COMMIT`'e taşınıyor) — ve PR
+> bölünmesi buna göre güncellendi (yeni, önce çıkan **PR (a0)**). Bu aşama kod
+> değişikliği İÇERMİYOR — sadece uygulama planı; onaylandıktan sonra PR
+> (a0)'dan başlanacak.
 
 **Hedef:** Edge→backend zincirinde "hangi event daha yeni" sorusunun, restart'tan
 ve outbox retention temizliğinden bağımsız, güvenilir bir cevabı olmasını
@@ -364,6 +369,62 @@ event'leri `seq`'i artırır.
   geçişten önce TÜM edge'lerin yeni formata geçmiş olması rollout sırasıyla
   ve yukarıdaki %100 kriteriyle garanti edilir.
 
+**Durum değişimi vs. kamera tazeliği (netleştirme — Redis cache araştırması
+sırasında bulundu, kod değişikliği minimal):**
+- `park_slot_state.updated_at` SADECE koşullu upsert gerçekten bir satırı
+  güncellediğinde (`(epoch,seq)` ilerlediğinde) değişir — bu "durum değişim
+  zamanı"dır.
+- Bu, Aşama 7'nin koşullu upsert'inin DOĞAL bir yan etkisiyle, önceden ayrı
+  bir "dirty-check" iş kalemi sanılan bir sorunu da kapatıyor: eşit
+  `(epoch,seq)` taşıyan (örn. 300s'lik değişmemiş periyodik snapshot) bir
+  event, strict `>` koşulunu geçemediği için 0 satır güncelliyor — tabloya
+  gereksiz tam-satır yeniden yazım hiç olmuyor. Ayrı bir quick-win
+  GEREKMİYOR.
+- `ParkingCamera.lastCommunication` (zaten var, `ParkOccupancyManager.java`'da
+  `processDetection`/`applySlotChange` içinde her event'te — değişse de
+  değişmese de — koşulsuz güncelleniyor) bundan BAĞIMSIZ kalmalı: kamera
+  canlılığını/tazeliğini, `park_slot_state`'e DOKUNMADAN, küçük
+  tek-satırlık kendi tablosunda takip ediyor. Bu iki yazım yolu birbirine
+  bağlanmamalı — Aşama 7 implementasyonu bu ayrımı KORUMALI.
+
+**WS Broadcast ve Notify Hook'larının Zamanlaması — YENİ P0 (Redis cache
+araştırması sırasındaki ikinci tur kod denetiminde bulundu):**
+- **Sorun (doğrulandı):** `messagingTemplate.convertAndSend(...)`
+  (`ParkOccupancyManager.java:99,149,244`) ve notify hook'ları
+  (`notifyInterestedUsers`, `notifyOccupancyFilled`) şu an `@Transactional`
+  metodun İÇİNDE, transaction fiziksel commit'inden ÖNCE çağrılıyor;
+  `AFTER_COMMIT` kullanan hiçbir mekanizma kod genelinde yok (grep: 0
+  sonuç). Transaction sonradan (örn. `parkingCameraDao.save`/
+  `parkInfoDao.save` başarısız olursa) rollback olursa, WS client'ları hiç
+  gerçekleşmemiş bir güncellemeyi almış olabilir.
+- **Çözüm:** `processDetection`/`applySlotChange`/`upsertSlotLayout` artık
+  doğrudan `convertAndSend`/notify çağırmaz; yerine transaction içinde
+  `ApplicationEventPublisher.publishEvent(new
+  SlotOccupancyChangedEvent(parkInfoId, dto, becameAvailable,
+  becameOccupied))` yayınlanır. Yeni bir `@Component` dinleyici,
+  `@TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)` ile
+  asıl WS broadcast + notify çağrılarını fiziksel commit'ten SONRA yapar.
+- **`fallbackExecution` notu:** `@TransactionalEventListener`'ın varsayılanı
+  `fallbackExecution=false` — AKTİF bir transaction yokken `publishEvent`
+  çağrılırsa event SESSİZCE atılır (listener hiç çalışmaz). Bu varsayılan
+  KORUNUYOR (`true` yapmak, transaction'sız çağrıda anlık/garantisiz
+  tetiklemeye döner, tasarımın amacını bozar) — ama bu davranış bir test ile
+  AÇIKÇA yakalanmalı (test senaryoları, madde 11), aksi halde biri ileride
+  transaction dışı bir çağrı eklerse olay sessizce kaybolur ve fark
+  edilmez.
+- **İleriye dönük not (ADR-010'a da kaydedildi):** Eğer listener içinde
+  ileride bir DB yazımı yapılması gerekirse (örn. bildirim log'u), bu yazım
+  `@Transactional(propagation = Propagation.REQUIRES_NEW)` ile AYRI bir
+  transaction'da olmalı — orijinal transaction `AFTER_COMMIT` anında zaten
+  kapanmış/commit olmuş durumda, listener metodu kendiliğinden
+  transactional değil.
+- **Kapsam:** üç yazım metodu da (2 Kafka-tetikli + 1 REST-tetikli
+  `upsertSlotLayout`) aynı düzeltmeye tabi.
+- **PR bölünmesi:** bu madde, şema/upsert/sahiplik değişikliklerinden AYRI,
+  kendi başına ilk çıkan **PR (a0)** olarak uygulanır (bkz. "PR bölünmesi")
+  — düşük riskli, bağımsız, hiçbir yeni tablo/flag gerektirmeyen bir
+  düzeltme, hemen üretime çıkabilir.
+
 **Test senaryoları (tam liste):**
 1. Edge restart sonrası epoch/seq: `slot_state`/`process_epoch` (retention'dan
    ayrı, kalıcı) restart simülasyonunda (yeni instance, aynı PVC) epoch'un
@@ -402,6 +463,20 @@ event'leri `seq`'i artırır.
    `park_slot_id`'ye atanmamış bir `camera_id`'den gelen event'in (epoch/seq
    ne olursa olsun) reddedildiği VE `non_owner_camera_rejected_total`'ın
    arttığı; atanmış kameradan gelen event'in normal işlendiği.
+10. Durum değişimi vs. kamera tazeliği: ardışık 2 değişmeyen snapshot'ta
+    `park_slot_state.updated_at` SABİT kalırken `ParkingCamera.
+    lastCommunication`'ın GÜNCELLENDİĞİ.
+11. AFTER_COMMIT doğru çalışıyor: (a) zorla rollback simülasyonu (örn.
+    `parkInfoDao.save` mock'ta exception fırlatıyor) → hiçbir WS mesajı
+    gönderilmediği, hiçbir notify hook çağrılmadığı; (b) transaction'sız bir
+    `publishEvent` çağrısı → `fallbackExecution=false` nedeniyle listener'ın
+    SESSİZCE çalışmadığının AÇIKÇA doğrulandığı (sürpriz değil, belgelenmiş
+    davranış).
+12. Kafka redelivery / tekrar işleme: aynı event (aynı `(epoch,seq)`)
+    offset-commit'ten önce bir çökme simülasyonuyla İKİ KEZ işlendiğinde,
+    ikinci işlemede koşullu upsert 0 satır etkilediği için WS'e yalnızca
+    TEK mesaj gittiği (ilk işlemeden) — ikinci işleme ne WS ne de metrik
+    tarafında bir "ikinci güncelleme" gibi görünmüyor.
 
 **Kabul kriterleri:** Edge pod'u herhangi bir sebeple (restart, reschedule,
 saat kayması, 7+ gün retention purge) yeniden başlasa da üretilen
@@ -412,7 +487,11 @@ yapmadan DB'ye yazmıyor; reddedilen her yazım ilgili metrikle
 `non_owner_camera_rejected_total`) gözlemlenebilir; aynı parkın farklı
 slotlarına concurrency=3 ile eşzamanlı yapılan güncellemeler birbirini
 kaybetmiyor; dual-write hiçbir koşulda iki tablo arasında tutarsızlık
-bırakmıyor; ileri kaymış saatli bir edge pod sessizce veri üretemiyor.
+bırakmıyor; ileri kaymış saatli bir edge pod sessizce veri üretemiyor; WS
+broadcast ve notify hook'ları her zaman transaction fiziksel commit'inden
+SONRA tetikleniyor, rollback olduğunda hiçbiri tetiklenmiyor; aynı event'in
+Kafka tarafından tekrar teslimi (crash-before-offset-commit) WS'e ikinci bir
+mesaj üretmiyor.
 
 **Risk:** Yüksek — şema geçişi (JSONB→ilişkisel tablo, dual-write) ve
 concurrency semantiği değişiyor; staging'de yük testiyle (eşzamanlı çoklu
@@ -427,12 +506,20 @@ KAPSAMI DIŞINDA tutuldu — bu iki PR'a (a/b/c) dahil edilmeyecek, `replicas>1`
 geçiş kararı alındığında ayrı bir Aşama 8 olarak ele alınacak.
 
 **Uygulama PR bölünmesi (plan onaylandıktan sonra):**
+- **PR (a0) — AFTER_COMMIT düzeltmesi (ÖNCE çıkar):** `SlotOccupancyChangedEvent`
+  + `@TransactionalEventListener(AFTER_COMMIT)` dinleyici + WS broadcast/notify
+  çağrılarının `processDetection`/`applySlotChange`/`upsertSlotLayout`'tan bu
+  dinleyiciye taşınması + rollback testi + `fallbackExecution=false` testi.
+  Şema/flag/sahiplik değişikliği YOK — bağımsız, düşük riskli, hiçbir yeni
+  tablo gerektirmez, hemen üretime çıkabilir.
 - **PR (a) — Backend temel:** `park_slot_state` şeması + koşullu upsert
   (tuple karşılaştırması) + **kamera sahiplik kontrolü**
   (`camera_slot_identity` lookup + `non_owner_camera_rejected_total`) +
   `stale_event_rejected_total` / `future_epoch_rejected_total` metrikleri +
-  feature flag (varsayılan `legacy`) + dual-write (aynı transaction). Edge
-  tarafında hiçbir değişiklik gerektirmez, tek başına deploy edilebilir.
+  feature flag (varsayılan `legacy`) + dual-write (aynı transaction) +
+  Kafka-redelivery testi (madde 12). PR (a0)'nın üzerine kurulur (WS/notify
+  çağrıları zaten event-publish modeline taşınmış olacak). Edge tarafında
+  hiçbir değişiklik gerektirmez, tek başına deploy edilebilir.
 - **PR (b) — Edge:** `(epoch, seq)` üretimi/persist (PVC dahil k8s değişikliği,
   `max(now,last_epoch+1)` kuralı) + **NTP senkron kontrolü** (eşik aşılırsa
   yayın durdurma + alarm) + Avro alan eklemeleri + snapshot'ın kendi `seq`
@@ -453,9 +540,9 @@ Aşama 0 (hızlı fix) ──▶ Aşama 1 (SQLite outbox) ──▶ Aşama 2 (de
 
 Aşama 5 (temizlik) — herhangi bir zamanda, bağımsız
 
-Aşama 7 (version/sequence + JSONB lost-update, PLAN) — Aşama 2'nin event
+Aşama 7 (version/sequence + JSONB lost-update, PLAN v4) — Aşama 2'nin event
 şemasına ek alan ekliyor, bağımsız yürütülebilir ama replicas>1/concurrency>1
-öncesi ZORUNLU önkoşul.
+öncesi ZORUNLU önkoşul. İç PR sırası: PR (a0, AFTER_COMMIT) ──▶ PR (a, şema+upsert+sahiplik) ──▶ PR (b, edge) ──▶ PR (c, enforce+JSONB kaldırma).
 ```
 
 Aşama 2 tamamlanmadan Aşama 4'teki snapshot event'i taşınacak bir topic/consumer bulamaz; Aşama 3, Aşama 2'nin event şemasına (slot kimliği taşıyan alanlar) bağımlı olduğu için ondan sonra önerilir ama kesin bir teknik zorunluluk değildir.

@@ -30,6 +30,7 @@
 | 16 | WS subscribe anında `parkOccupancy` için otomatik snapshot yok — `WebSocketConnectEventListener.java:33-34` bağlantıda sadece `/topic/parkInfos` ve `/topic/personnel` gönderiyor | Client WS'e yeni bağlandığında mevcut doluluk durumunu görmez, REST'i kendisi ayrıca çağırmak zorunda | Orta — client implementasyonuna bağımlı, backend garanti vermiyor (TARGET §6'nın önerdiği, henüz yapılmamış) | **P2** | Subscribe-time snapshot standartlaştırılsın (ADR-003/TARGET §6) |
 | 17 | `ParkOccupancyDTO`'da version/sıra alanı yok (`ParkOccupancyManager.toDto`, satır 281-284: sadece `id, capacity, availableCount, slots, updatedAt`) | İstemci, aldığı snapshot'ın hangi event'e kadar güncel olduğunu ayırt edemiyor | Düşük tek başına, madde 12/13 çözülünce önemi artar | **P2** | Aşama 7'nin şema geçişiyle birlikte DTO'ya `epoch`/`seq` eklensin |
 | 18 | `notifyOccupancyFilled` hâlâ log-only stub (`ParkOccupancyManager.java:267-270`) | EMPTY→OCCUPIED geçişinde gerçek bir bildirim/push tetiklenmiyor | Düşük, iş değeri var ama hedefleme kuralı tanımlanmadan uygulanamaz | **P2 (guidance)** | `notifyInterestedUsers`'ın hedefleme/abonelik sistemi kurulduğunda (ayrı karar) aynı anda ele alınsın |
+| 19 | `GET /api/v1/parkOccupancy/{parkInfoId}` için istek sayısı/p95 Micrometer+Prometheus ile ZATEN toplanıyor (`pom.xml:162-178`, `application.yml:363-384`: `exposure.include: health,metrics,prometheus,...`, `percentiles-histogram.http.server.requests: true`; Prometheus zaten `selfpark-backend:8080`'i scrape ediyor, `monitoring/prometheus/prometheus.yml:22-25`) ama Grafana'da görünür/izlenen bir panel yok; DB sorgu sayısı hiç enstrümante değil | Altyapı kararları (örn. bir read-cache ekleme) ölçüme değil varsayıma dayanıyor — ADR-007'nin "kanıtlanmamış ihtiyaca göre altyapı ekleme" ilkesiyle çelişir | Düşük bugün (tek satırlık dev ortamı, doğrulandı: `pg_stat_user_tables` → `park_slot_occupancy` `n_live_tup=1`), ama production ölçeğinde karar kalitesini etkiler | **P2** | Mevcut `http_server_requests_seconds` metriğini Grafana'da görünür hale getir + Hibernate `generate_statistics=true` + Micrometer `HibernateMetrics` binder ile DB sorgu sayısını ekle; detaylı kademeli plan ve tetikleyici eşikler `ADR_DOCUMENTS.md` ADR-010'da |
 
 > **Karar (2026-11-25):** Madde 8 (Kafka RF≥2/çok-broker yükseltmesi) ayrı
 > bir faz olarak sonraya bırakıldı — WS/Redis işiyle (ADR-006/ADR-007)
@@ -69,6 +70,16 @@
 > (henüz uygulanmadı, sadece plan). P1 maddeleri bilerek bu planın kapsamı
 > dışında tutuldu — `replicas>1`'e geçiş kararı alındığında ayrı bir aşama
 > olarak ele alınmalı (bkz. `docker-compose.yaml`'daki uyarı yorumu).
+
+> **Güncelleme (2026-11-26, Redis cache araştırması):** Kullanıcı mobil
+> polling'in production'da Postgres'i zorlayabileceğini öngörüp Kafka→Redis
+> write-through cache önerdi; araştırma sırasında üç ayrı bulgu ortaya çıktı:
+> (a) madde 19 (bu madde, YENİ) — altyapı kararları ölçüme dayanmıyor; (b) WS
+> broadcast/notify hook'larının transaction commit'inden önce tetiklenmesi
+> (Aşama 7'ye YENİ P0 olarak eklendi, PR (a0)); (c) Aşama 7'nin koşullu
+> upsert'inin zaten değişmeyen periyodik snapshot'larda gereksiz yazımı
+> engellediği (ayrı bir "dirty-check" iş kalemi gerekmiyor). Redis'in kendisi
+> ŞİMDİ eklenmiyor — gerekçe ve kademeli plan `ADR_DOCUMENTS.md` ADR-010'da.
 
 ## 2. Production Failure Scenario Matrisi
 
