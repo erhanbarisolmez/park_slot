@@ -211,6 +211,14 @@ CREATE TABLE outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, slot_id INTEGER, stat
 
 **Consequences:** Acil değil — bugün tek kameralı her park için Aşama 3 çözümü yeterli. Çakışan görüş alanlı çoklu kamera kurulumu planlandığında (`mark_perspective.py` genişletmesi + backend'de `park_slot` tablosu) uygulanmalı.
 
+> **Not (2026-11-26):** Linkleme mekanizması olarak burada önerilen operatör-onaylı
+> yaklaşım, somut bir mimariyle ADR-012'de ele alındı. Ama `camera_slot_identity`/
+> `explicitParkSlotId` carryover (Aşama 3) bu amaçla KULLANILMAMALI — Aşama 7'de
+> eklenen `UNIQUE(park_info_id, park_slot_id)` kısıtına (V018) çarpar, çünkü o
+> kısıt bir `park_slot_id`'ye aynı anda yalnızca bir kameranın bağlı olmasını
+> garanti eder. ADR-012, bu kısıta dokunmadan ayrı bir "fiziksel grup" linki +
+> Kafka-korelasyonlu füzyon consumer'ı öneriyor — bkz. ADR-012.
+
 **Rejected Alternatives:** Seçenek 1 (hiçbir şey yapmama) kalıcı bir çözüm değil, sadece bugünkü (tek-kamera-per-alan) durumu sürdürür — not olarak bırakıldı ama gerçek bir çoklu-kamera-kesişimi kurulumunda yetersiz kalacağı biliniyor.
 
 ---
@@ -319,6 +327,91 @@ merkezin topoloji sürüm numarasını karşılaştırıp uyuşmazlıkta alarm/l
 dönüldüğünde başlangıç noktası olarak kayıt altına alınıyor; GAP #4
 (kamera değişiminde orphan key) ve ADR-002 ile ilişkili ama onların kapsamını
 genişletmiyor — ayrı bir karar.
+
+---
+
+## ADR-012: Çok Kameralı Çakışan Slotlarda Kafka-Korelasyonlu Füzyon (tasarım, henüz uygulanmadı, kod değişikliği yok)
+
+**Context:** ADR-009, aynı fiziksel slotu farklı açılardan gören birden
+fazla kameranın linklenmesi için operatör-onaylı bir yaklaşım önerdi ve
+bunun mevcut `PUT /api/v0/camera/{cameraCode}/slots/layout` +
+`explicitParkSlotId` carryover mekanizmasıyla (Aşama 3,
+`SlotIdentityResolver.resolve()`) yapılabileceğini varsaydı. Ama bu
+oturumda `camera_slot_identity`'ye Aşama 7 kapsamında eklenen **V018**
+(`UNIQUE(park_info_id, park_slot_id)` — kamera-sahiplik tasarımının temel
+taşı) ile doğrudan çelişiyor: bu kısıt, bir `park_slot_id`'ye aynı anda
+yalnızca BİR kameranın bağlı olabilmesini garanti ediyor. `resolve()`'un
+carryover dalı, ikinci bir kamerayı aynı `park_slot_id`'ye bağlamaya
+çalışırsa bu UNIQUE kısıtına çarpıp DB seviyesinde reddedilir. Yani "iki
+farklı kameranın slotlarını aynı fiziksel yer olarak kaydet" senaryosu,
+ADR-009'un varsaydığı mekanizmayla bugün mümkün değil.
+
+**Problem:** Aşama 7'nin kamera-sahiplik modeline (V018 dahil) dokunmadan,
+aynı fiziksel alanı gören birden fazla kameranın verisini nasıl
+ilişkilendirip güven skoruyla birleştirebiliriz (sensör füzyonu) — ve bu
+füzyon kararını `anomaly_detection` (GAP #11) için nasıl görünür kılarız?
+
+**Tasarım (Decision):**
+- Her kamera kendi `park_slot_id`'sine tek başına sahip olmaya devam eder
+  — Aşama 3/7 akışı ve V018 hiç değişmiyor.
+- Yeni, hafif bir **"fiziksel grup" link tablosu** eklenir: N adet
+  `park_slot_id`'yi "aynı fiziksel alan" olarak gruplar. Grup ataması
+  ADR-009'daki "otomatik eşleştirme yapma" ilkesiyle tutarlı şekilde
+  operatör-onaylı kalır.
+- Kafka zaten her iki kameranın ham event'lerini (delta+snapshot
+  topic'leri, ADR-005 partition key, retention) tutuyor — bu amaçla ek
+  bir depolama gerekmiyor.
+- Yeni bir **korelasyon/füzyon consumer'ı**, SADECE linklenmiş gruplar
+  için, Kafka'dan her iki kameranın ham event'lerini okuyup güven
+  skoruyla birleştirir ve tek bir konsolide "grup durumu" kaydını DB'ye
+  yazar. Linksiz (bugünkü tüm) slotlar hiç etkilenmez — mevcut doğrudan
+  yazım yolu aynen çalışmaya devam eder.
+- `anomaly_detection` (GAP #11), bu korelasyon akışını yeni bir sinyal
+  kaynağı olarak kullanabilir: linklenmiş iki kameranın sürekli
+  anlaşmazlığı (biri OCCUPIED derken diğeri ısrarla EMPTY) kalibrasyon
+  kayması/kalıcı occlusion/kamera bozulması anomalisi olarak işaretlenir.
+
+**Önemli ön-koşul — confidence eksikliği (bu oturumda doğrulandı):** Edge
+bugün iki tür güven skoru ÜRETİYOR (per-slot CNN softmax — debug
+overlay'deki yüzdeler — ve `VehicleDetector.detect()`'in kendi
+`confidence` alanı, `vehicle_detector.py`) ama HİÇBİRİ MQTT'ye
+taşınmıyor (`mqtt_publisher.py`'deki `publish_raw`/`publish_slot_changed`
+payload'ları sadece `status`/`version` taşıyor). Güven-skoru bazlı füzyon
+için edge'in bu skoru event payload'ına eklemesi VE Avro şemasının
+(Aşama 2) bunu taşıması gerekir — backend-only bir değişiklik değil,
+edge+şema+backend'i birlikte kapsayan ayrı bir iş parçası.
+
+**Options (confidence sinyali geldiğinde füzyon kuralı):**
+1. Hiçbir şey yapma — linkleme/korelasyon hiç kurulmaz, bugünkü durum.
+2. Basit "yüksek güven kazanır" — iki event çakışırsa yüksek confidence'lı
+   olan grup durumunu belirler.
+3. Ağırlıklı füzyon — iki kameranın confidence'ı birlikte değerlendirilir
+   (ikisi de aynı yöndeyse birleşik güven artar, çakışıyorsa yüksek olan
+   ama düşük toplam güvenle işaretlenir), `anomaly_detection` için ek bir
+   "düşük güven/anlaşmazlık" etiketi üretilir.
+
+**Decision:** Seçenek 3 — anlaşmazlık durumunu sessizce çözmek yerine
+`anomaly_detection`'a görünür kılıyor (ADR-009'un "yanlış-birleşme
+riskinden kaçın" ilkesiyle tutarlı, füzyon kararı opak bırakılmıyor).
+
+**Trade-offs:** Seçenek 2 daha basit ama anlaşmazlık bilgisini atıyor —
+tekrarlayan kalibrasyon sorunları fark edilmeden kalabilir. Seçenek 3 ek
+bir "güven/anlaşmazlık" alanı ve `anomaly_detection` entegrasyonu
+gerektiriyor, ama füzyon kararının NEDEN öyle verildiğini izlenebilir
+kılıyor.
+
+**Consequences:** Bugün uygulanmıyor. Gerçek çakışan-görüş-alanlı kamera
+kurulumu planlandığında, hem edge (confidence'ı payload'a ekle) hem Avro
+şema hem backend (grup tablosu + korelasyon consumer + anomaly_detection
+entegrasyonu) değişikliği gerektiren ayrı bir faz olarak ele alınmalı —
+ADR-009'un saha-işi gerekçesiyle aynı mantık.
+
+**Rejected Alternatives:** `camera_slot_identity`/`explicitParkSlotId`
+carryover'ı doğrudan linkleme için kullanmak — V018'in UNIQUE kısıtına
+çarpıyor, reddedildi. Role-bazlı statik öncelik (örn. "ENTRY_FACING
+kamerası her zaman kazanır") değerlendirildi ama anlaşmazlığı veriden
+(confidence) değil varsayımdan çözdüğü için, ve `anomaly_detection`'a
+hiçbir sinyal üretmediği için Seçenek 3 lehine bırakıldı.
 
 ---
 

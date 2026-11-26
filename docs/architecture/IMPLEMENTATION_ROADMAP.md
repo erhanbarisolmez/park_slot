@@ -556,3 +556,11 @@ Saha işi (kameralar arası ortak fiziksel referans noktası ölçümü,
 `mark_perspective.py` genişletmesi) gerektirdiği için bu roadmap'e dahil
 edilmedi — çakışan görüş alanlı çoklu kamera kurulumu planlandığında ayrı
 bir faz olarak ele alınmalı.
+
+Linkleme SONRASI iki kameranın çakışan rapor vermesi durumunda ne
+olacağı (arbitraj/füzyon) ayrıca **ADR-012** olarak kaydedildi —
+Aşama 7'de `camera_slot_identity`'ye eklenen `UNIQUE(park_info_id,
+park_slot_id)` kısıtına (V018) dokunmadan, ayrı bir "fiziksel grup" linki
++ Kafka-korelasyonlu füzyon consumer'ı öneriyor. Bu da ADR-009 ile aynı
+sebeple (saha işi + edge/Avro şema değişikliği) bu roadmap'e dahil
+edilmedi, ayrı bir gelecek faz.
