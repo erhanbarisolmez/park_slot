@@ -28,7 +28,10 @@ class FakePublisher:
 
     epochs_received: Aşama 7 (PR b) - OutboxWorker'ın her çağrıda geçirdiği
     epoch değerleri, calls/slot_changed_calls'un şeklini (mevcut testler)
-    bozmadan ayrıca kaydedilir."""
+    bozmadan ayrıca kaydedilir.
+
+    bypass_dedup_received: ADR-008 düzeltmesi - snapshot_once'ın gerçekten
+    bypass_dedup=True geçirdiğini doğrulamak için."""
 
     def __init__(self, succeed: bool = True, fail_on_slot_id: int | None = None):
         self.succeed = succeed
@@ -36,10 +39,12 @@ class FakePublisher:
         self.calls: list[dict] = []
         self.slot_changed_calls: list[tuple] = []
         self.epochs_received: list = []
+        self.bypass_dedup_received: list = []
 
-    def publish_raw(self, slot_statuses: dict, epoch=None) -> bool:
+    def publish_raw(self, slot_statuses: dict, epoch=None, bypass_dedup: bool = False) -> bool:
         self.calls.append(dict(slot_statuses))
         self.epochs_received.append(epoch)
+        self.bypass_dedup_received.append(bypass_dedup)
         return self.succeed
 
     def publish_slot_changed(self, slot_id: int, prev_status, status: str, version: int, epoch=None) -> bool:
@@ -431,6 +436,22 @@ def test_snapshot_once_passes_outbox_epoch_to_publisher(tmp_path):
     worker.snapshot_once()
 
     assert publisher.epochs_received == [outbox.epoch]
+
+
+def test_snapshot_once_always_passes_bypass_dedup_true(tmp_path):
+    """ADR-008 düzeltmesi: periyodik snapshot (sabit 5dk timer, storm riski
+    yok) publish_raw'ın dedup'ını atlamalı - aksi halde durağan bir sahnede
+    reconciliation amacı boşa çıkar (canlı gözlemde bulundu: CAM-002/CAM-003
+    164+ dakika hiç gerçek publish yapmamıştı)."""
+    outbox = Outbox(db_path=str(tmp_path / "outbox.db"))
+    outbox.record_change(1, "OCCUPIED", 0.9)
+    publisher = FakePublisher(succeed=True)
+    worker = OutboxWorker(outbox, publisher)
+
+    worker.snapshot_once()
+    worker.snapshot_once()  # aynı durum, art arda ikinci çağrı
+
+    assert publisher.bypass_dedup_received == [True, True]
 
 
 def test_flush_once_is_noop_when_publishing_paused(tmp_path):

@@ -300,7 +300,13 @@ class OutboxWorker:
         (delta kuyruğu boş olsa da), slot_state tablosunun tam anlık
         görüntüsünü snapshot kanalından (publish_raw) gönderir. Bu, bağlantı
         olayına bağlı enable_startup_snapshot'tan farklı - zaman tabanlı,
-        broker bağlantısı hiç kopmasa bile periyodik drift düzeltmesi sağlar.
+        broker bağlantısı hiç kopmasa bile GERÇEKTEN periyodik drift
+        düzeltmesi sağlar - bypass_dedup=True ile (ADR-008: "backend bu
+        snapshot'ı koşulsuz yazar" - sahne değişmese de her tur fiilen
+        MQTT'ye gönderilir, publish_raw'ın kendi dedup'ı bu bacak için
+        devre dışı; aksi halde durağan bir sahnede bu bacak sessizce
+        hiçbir şey göndermeden "başarılı" dönerdi, reconciliation amacını
+        boşa çıkarırdı - canlı gözlemde bulundu, bkz. publish_raw docstring'i).
 
         Aşama 7 (PR b): self._publishing_paused true ise no-op (True) döner."""
         if self._publishing_paused:
@@ -309,7 +315,7 @@ class OutboxWorker:
         full_state = self._outbox.read_full_state()
         if not full_state:
             return True
-        return self._publisher.publish_raw(full_state, epoch=self._outbox.epoch)
+        return self._publisher.publish_raw(full_state, epoch=self._outbox.epoch, bypass_dedup=True)
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, daemon=True, name="outbox-worker")

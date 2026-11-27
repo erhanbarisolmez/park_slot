@@ -156,7 +156,7 @@ class MqttPublisher:
         slot_statuses = {slot.id: slot.status.value.upper() for slot in parking_status.slots}
         return self.publish_raw(slot_statuses)
 
-    def publish_raw(self, slot_statuses: dict, epoch: Optional[int] = None) -> bool:
+    def publish_raw(self, slot_statuses: dict, epoch: Optional[int] = None, bypass_dedup: bool = False) -> bool:
         """slot_id -> status string haritasını yayınlar. OutboxWorker'ın tek
         giriş noktası - dönüş değeri (True=başarılı, False=başarısız/atlandı)
         outbox'ın bir kaydı 'gönderildi' işaretleyip işaretlemeyeceğini belirler.
@@ -169,6 +169,21 @@ class MqttPublisher:
 
         epoch: Aşama 7 (PR b), process başına kalıcı epoch - opsiyonel
         (varsayılan None), eski çağrı yerleri/testler etkilenmez.
+
+        bypass_dedup: ADR-008'in periyodik reconciliation bacağı (b) - "edge
+        periyodik olarak bir snapshot gönderir, backend KOŞULSUZ yazar" -
+        _last_payload dedup'ı ile çelişir: sahne değişmediğinde dedup hiçbir
+        şey göndermeden sessizce 'başarılı' döner, periyodik bacağın asıl
+        amacını (backend satırı bir şekilde kaybolur/bozulursa bile en geç
+        bir snapshot aralığında kendini düzeltmesi) boşa çıkarır (canlı
+        gözlemde doğrulandı: CAM-002/CAM-003, sahne durağan olduğu için
+        164+ dakikadır hiç gerçek publish yapmamış). `_send_snapshot`
+        (bağlantı-olayı tetikli, varsayılan bypass_dedup=False) için dedup
+        KORUNUYOR - orada gerçek bir amacı var (reconnect storm'da flood
+        önleme, ADR-008'in kapsamı dışında ayrı bir operasyonel kaygı).
+        OutboxWorker.snapshot_once (periyodik, 5dk sabit timer, storm riski
+        yok) bypass_dedup=True geçirerek ADR-008'in gerektirdiği koşulsuz
+        gönderimi sağlar.
         """
         if self._client is None or not self._client.is_connected():
             return False
@@ -179,7 +194,7 @@ class MqttPublisher:
         }
 
         with self._lock:
-            if payload_slots == self._last_payload:
+            if not bypass_dedup and payload_slots == self._last_payload:
                 return True
 
         topic = f"selfpark/camera/{self._settings.camera_code}/detection"

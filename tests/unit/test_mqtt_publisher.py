@@ -296,6 +296,31 @@ def test_publish_raw_includes_given_epoch():
     assert body == {"slots": {"CAM-001-1": "EMPTY"}, "epoch": 1732600000000}
 
 
+def test_publish_raw_bypass_dedup_sends_even_when_payload_unchanged():
+    """ADR-008 düzeltmesi: bypass_dedup=True ile aynı payload art arda
+    gönderilse de İKİSİ de gerçekten MQTT'ye gider - periyodik reconciliation
+    (OutboxWorker.snapshot_once) için gereken 'koşulsuz yaz' garantisi."""
+    client = FakeMqttClient()
+    publisher = MqttPublisher(make_settings(), camera_id="cam1", state_store=None, client=client)
+
+    publisher.publish_raw({1: "EMPTY"}, bypass_dedup=True)
+    publisher.publish_raw({1: "EMPTY"}, bypass_dedup=True)
+
+    assert len(client.published) == 2
+
+
+def test_publish_raw_default_dedup_still_applies_when_bypass_not_given():
+    """bypass_dedup verilmezse (varsayılan False) mevcut dedup davranışı
+    değişmemeli - _send_snapshot (reconnect-storm koruması) için önemli."""
+    client = FakeMqttClient()
+    publisher = MqttPublisher(make_settings(), camera_id="cam1", state_store=None, client=client)
+
+    publisher.publish_raw({1: "EMPTY"})
+    publisher.publish_raw({1: "EMPTY"})
+
+    assert len(client.published) == 1
+
+
 def test_publish_slot_changed_includes_given_epoch():
     """Aşama 7 (PR b): epoch verilirse delta payload'ına dahil edilmeli."""
     client = FakeMqttClient()
