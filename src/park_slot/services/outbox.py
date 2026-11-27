@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from park_slot.annotation.schema import SlotState
+from park_slot.services.ntp_check import check_clock_sync
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,10 @@ class Outbox:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._init_schema()
+        # Aşama 7 (PR b, GAP #12): process başına BİR KEZ, kalıcı epoch.
+        # Constructor'da otomatik üretilir (_init_schema ile aynı desen) -
+        # OutboxWorker.flush_once/snapshot_once çağrılmadan önce her zaman hazır.
+        self.epoch = self.load_or_generate_epoch()
 
     def _init_schema(self) -> None:
         with self._conn:
@@ -39,6 +44,7 @@ class Outbox:
                     slot_id    INTEGER PRIMARY KEY,
                     status     TEXT NOT NULL,
                     confidence REAL NOT NULL DEFAULT 0,
+                    seq        INTEGER NOT NULL DEFAULT 0,
                     updated_at INTEGER NOT NULL
                 );
 
@@ -54,8 +60,53 @@ class Outbox:
                 );
                 CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox (sent_at)
                     WHERE sent_at IS NULL;
+
+                -- Aşama 7 (PR b): tek satırlık, process başına bir kez üretilen
+                -- kalıcı epoch kaynağı (bkz. load_or_generate_epoch) - GAP #12'nin
+                -- version'ı artık outbox geçmişinden DEĞİL, bu tablo + slot_state.seq'ten
+                -- geliyor, restart/retention purge'den bağımsız.
+                CREATE TABLE IF NOT EXISTS process_epoch (
+                    id    INTEGER PRIMARY KEY CHECK (id = 0),
+                    epoch INTEGER NOT NULL
+                );
                 """
             )
+            # Bu PR'dan ÖNCE oluşturulmuş bir slot_state dosyası seq kolonunu
+            # taşımayabilir - CREATE TABLE IF NOT EXISTS bu durumda hiçbir şey
+            # yapmaz, idempotent bir ALTER TABLE ile tamamlanır.
+            columns = {row[1] for row in self._conn.execute("PRAGMA table_info(slot_state)")}
+            if "seq" not in columns:
+                self._conn.execute("ALTER TABLE slot_state ADD COLUMN seq INTEGER NOT NULL DEFAULT 0")
+                # code-review bulgusu: DEFAULT 0 ile eklenen kolon, bu PR'dan ÖNCE
+                # zaten ilerlemiş bir slotun sayacını migration sınırında geriye
+                # sıfırlardı (tam da GAP #12'nin önlemeye çalıştığı regresyonun
+                # kendisi) - eski outbox geçmişindeki MAX(version)'dan backfill
+                # ederek bu sınırda sürekliliği korur. Taze bir DB'de (slot_state
+                # boş) no-op.
+                self._conn.execute(
+                    "UPDATE slot_state SET seq = ("
+                    "  SELECT COALESCE(MAX(o.version), 0) FROM outbox o WHERE o.slot_id = slot_state.slot_id"
+                    ")"
+                )
+
+    def load_or_generate_epoch(self) -> int:
+        """Aşama 7 (PR b): process başına BİR KEZ üretilen, restart'tan bağımsız
+        kalıcı epoch (ms). Önceki bir çalıştırmadan kalan epoch varsa, yeni
+        epoch en azından bir fazlası olacak şekilde garanti edilir - sistem
+        saati geri alınmış bir restart'ta bile epoch asla eşit/geriye gitmez."""
+        with self._lock:
+            with self._conn:
+                row = self._conn.execute(
+                    "SELECT epoch FROM process_epoch WHERE id = 0"
+                ).fetchone()
+                now_ms = int(self._clock() * 1000)
+                new_epoch = max(now_ms, row[0] + 1) if row else now_ms
+                self._conn.execute(
+                    "INSERT INTO process_epoch (id, epoch) VALUES (0, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET epoch = excluded.epoch",
+                    (new_epoch,),
+                )
+                return new_epoch
 
     def record_change(self, slot_id: int, status: str, confidence: float) -> None:
         """slot_state (son bilinen durum) ve outbox (gönderim kuyruğu) satırlarını
@@ -66,28 +117,29 @@ class Outbox:
         with self._lock:
             with self._conn:
                 row = self._conn.execute(
-                    "SELECT status FROM slot_state WHERE slot_id = ?", (slot_id,)
+                    "SELECT status, seq FROM slot_state WHERE slot_id = ?", (slot_id,)
                 ).fetchone()
                 prev_status = row[0] if row else None
+                # Aşama 7 (PR b, GAP #12): next_seq artık slot_state'in KENDİ
+                # kalıcı sayacından geliyor - outbox geçmişinden MAX(version)+1
+                # hesaplamak (eski davranış) 7 günlük retention purge'den sonra
+                # veya outbox tablosu başka bir sebeple boşaldığında sessizce
+                # 1'den başlardı. slot_state purge'den hiç etkilenmiyor.
+                next_seq = (row[1] if row else 0) + 1
 
                 self._conn.execute(
-                    "INSERT INTO slot_state (slot_id, status, confidence, updated_at) "
-                    "VALUES (?, ?, ?, ?) "
+                    "INSERT INTO slot_state (slot_id, status, confidence, seq, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?) "
                     "ON CONFLICT(slot_id) DO UPDATE SET "
                     "status=excluded.status, confidence=excluded.confidence, "
-                    "updated_at=excluded.updated_at",
-                    (slot_id, status, confidence, now),
+                    "seq=excluded.seq, updated_at=excluded.updated_at",
+                    (slot_id, status, confidence, next_seq, now),
                 )
-
-                next_version = self._conn.execute(
-                    "SELECT COALESCE(MAX(version), 0) + 1 FROM outbox WHERE slot_id = ?",
-                    (slot_id,),
-                ).fetchone()[0]
 
                 self._conn.execute(
                     "INSERT INTO outbox (slot_id, status, prev_status, version, "
                     "created_at, sent_at, attempt_count) VALUES (?, ?, ?, ?, ?, NULL, 0)",
-                    (slot_id, status, prev_status, next_version, now),
+                    (slot_id, status, prev_status, next_seq, now),
                 )
 
     def on_slot_change(self, state: SlotState) -> None:
@@ -181,6 +233,10 @@ class OutboxWorker:
         poll_interval: float = 5.0,
         retention_days: int = 7,
         snapshot_interval: float = 300.0,
+        ntp_server: str = "pool.ntp.org",
+        ntp_drift_threshold_seconds: float = 5.0,
+        ntp_check_interval_seconds: float = 300.0,
+        ntp_check_fn: Callable[[str, float], bool] = check_clock_sync,
     ):
         self._outbox = outbox
         self._publisher = publisher
@@ -191,6 +247,15 @@ class OutboxWorker:
         # (MqttPublisher.enable_startup_snapshot, on_connect'e bağlı) zaten
         # var - bu, bağlantı KOPMADAN da periyodik drift düzeltmesi sağlar.
         self._snapshot_every_n_ticks = max(1, int(snapshot_interval / poll_interval))
+        # Aşama 7 (PR b): NTP senkron kontrolü - process başlangıcında (tick=0)
+        # ve periyodik olarak tekrarlanır. Drift/erişilemezlik tespit edilirse
+        # yayın (flush_once/snapshot_once) durur, ama outbox/slot_state yazımı
+        # ASLA durmaz - sadece MQTT'ye giden yol kapanır, outbox birikir.
+        self._ntp_server = ntp_server
+        self._ntp_drift_threshold_seconds = ntp_drift_threshold_seconds
+        self._ntp_check_every_n_ticks = max(1, int(ntp_check_interval_seconds / poll_interval))
+        self._ntp_check_fn = ntp_check_fn
+        self._publishing_paused = False
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -201,14 +266,22 @@ class OutboxWorker:
         bir kez, __main__.py'de). İlk başarısız satırda durur (sıra garantisi);
         o noktaya kadar başarıyla gönderilenler 'gönderildi' işaretlenir,
         kalanlar (ve bir sonraki tick'te eklenecek yeni satırlar) attempt_count
-        artırılıp bir sonraki tick'e bırakılır."""
+        artırılıp bir sonraki tick'e bırakılır.
+
+        Aşama 7 (PR b): self._publishing_paused true ise (NTP drift/erişim
+        hatası) no-op (True) döner - outbox birikmeye devam eder, yayın yapılmaz."""
+        if self._publishing_paused:
+            return True
+
         rows = self._outbox.read_pending_changes()
         if not rows:
             return True
 
         last_sent_id = None
         for row_id, slot_id, status, prev_status, version in rows:
-            if self._publisher.publish_slot_changed(slot_id, prev_status, status, version):
+            if self._publisher.publish_slot_changed(
+                slot_id, prev_status, status, version, epoch=self._outbox.epoch
+            ):
                 last_sent_id = row_id
             else:
                 break
@@ -227,11 +300,16 @@ class OutboxWorker:
         (delta kuyruğu boş olsa da), slot_state tablosunun tam anlık
         görüntüsünü snapshot kanalından (publish_raw) gönderir. Bu, bağlantı
         olayına bağlı enable_startup_snapshot'tan farklı - zaman tabanlı,
-        broker bağlantısı hiç kopmasa bile periyodik drift düzeltmesi sağlar."""
+        broker bağlantısı hiç kopmasa bile periyodik drift düzeltmesi sağlar.
+
+        Aşama 7 (PR b): self._publishing_paused true ise no-op (True) döner."""
+        if self._publishing_paused:
+            return True
+
         full_state = self._outbox.read_full_state()
         if not full_state:
             return True
-        return self._publisher.publish_raw(full_state)
+        return self._publisher.publish_raw(full_state, epoch=self._outbox.epoch)
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, daemon=True, name="outbox-worker")
@@ -245,6 +323,15 @@ class OutboxWorker:
     def _run(self) -> None:
         tick = 0
         while not self._stop_event.is_set():
+            if tick % self._ntp_check_every_n_ticks == 0:
+                try:
+                    self._publishing_paused = not self._ntp_check_fn(
+                        self._ntp_server, self._ntp_drift_threshold_seconds
+                    )
+                except Exception as e:
+                    logger.error("NTP senkron kontrolü başarısız: %s", e)
+                    self._publishing_paused = True
+
             try:
                 self.flush_once()
             except Exception as e:

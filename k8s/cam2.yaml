@@ -63,6 +63,8 @@ spec:
               mountPath: /app/data/logs
             - name: labeled-data
               mountPath: /app/data/labeled_cam2
+            - name: outbox-data
+              mountPath: /app/data/outbox
       volumes:
         - name: logs
           emptyDir: {}
@@ -79,6 +81,14 @@ spec:
         - name: labeled-data
           hostPath:
             path: /var/lib/park-slot/cam2/labeled
+            type: DirectoryOrCreate
+        # Aşama 7 (PR b): outbox SQLite dosyası (slot_state.seq + process_epoch)
+        # artık burada kalıcı - emptyDir olsaydı her restart'ta epoch/seq
+        # sıfırlanırdı (GAP #12'nin tam konusu). data-logs/labeled-data ile
+        # aynı gerekçe/desen.
+        - name: outbox-data
+          hostPath:
+            path: /var/lib/park-slot/cam2/outbox
             type: DirectoryOrCreate
 ---
 apiVersion: v1

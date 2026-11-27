@@ -56,7 +56,7 @@ def test_publish_includes_unknown_slots():
     assert qos == 1
     import json
     body = json.loads(payload)
-    assert body == {"slots": {"CAM-001-1": "EMPTY", "CAM-001-2": "OCCUPIED", "CAM-001-3": "UNKNOWN"}}
+    assert body == {"slots": {"CAM-001-1": "EMPTY", "CAM-001-2": "OCCUPIED", "CAM-001-3": "UNKNOWN"}, "epoch": None}
 
 
 def test_publish_prefixes_slot_ids_with_camera_code():
@@ -72,7 +72,7 @@ def test_publish_prefixes_slot_ids_with_camera_code():
 
     import json
     body = json.loads(client.published[0][1])
-    assert body == {"slots": {"CAM-002-1": "EMPTY"}}
+    assert body == {"slots": {"CAM-002-1": "EMPTY"}, "epoch": None}
 
 
 def test_dedup_skips_identical_snapshot():
@@ -181,6 +181,7 @@ def test_publish_slot_changed_sends_delta_to_slot_changed_topic():
     assert body["previousStatus"] == "EMPTY"
     assert body["currentStatus"] == "OCCUPIED"
     assert body["version"] == 3
+    assert body["epoch"] is None
     assert isinstance(body["timestamp"], int)
 
 
@@ -228,7 +229,21 @@ def test_enable_startup_snapshot_sends_immediately_when_already_connected():
     topic, payload, _ = client.published[0]
     assert topic == "selfpark/camera/CAM-001/detection"
     import json
-    assert json.loads(payload) == {"slots": {"CAM-001-1": "EMPTY", "CAM-001-2": "OCCUPIED"}}
+    assert json.loads(payload) == {"slots": {"CAM-001-1": "EMPTY", "CAM-001-2": "OCCUPIED"}, "epoch": None}
+
+
+def test_enable_startup_snapshot_includes_given_epoch():
+    """Aşama 7 (PR b) code-review bulgusu: bağlantı/reconnect snapshot'ı da
+    epoch taşımalı - saati bozuk bir pod'un reconnect anında epoch=null
+    gönderip backend'in ileri-kaymış-saat korumasını atlatmasını önler."""
+    client = FakeMqttClient(connected=True)
+    publisher = MqttPublisher(make_settings(), camera_id="cam1", state_store=None, client=client)
+
+    publisher.enable_startup_snapshot(lambda: {1: "EMPTY"}, epoch=1732600000000)
+
+    import json
+    body = json.loads(client.published[0][1])
+    assert body == {"slots": {"CAM-001-1": "EMPTY"}, "epoch": 1732600000000}
 
 
 def test_enable_startup_snapshot_sends_on_later_connect():
@@ -247,7 +262,7 @@ def test_enable_startup_snapshot_sends_on_later_connect():
     topic, payload, _ = client.published[0]
     assert topic == "selfpark/camera/CAM-001/detection"
     import json
-    assert json.loads(payload) == {"slots": {"CAM-001-1": "EMPTY"}}
+    assert json.loads(payload) == {"slots": {"CAM-001-1": "EMPTY"}, "epoch": None}
 
 
 def test_on_slot_change_uses_state_store_snapshot():
@@ -266,4 +281,28 @@ def test_on_slot_change_uses_state_store_snapshot():
     assert len(client.published) == 1
     import json
     body = json.loads(client.published[0][1])
-    assert body == {"slots": {"CAM-001-1": "EMPTY", "CAM-001-2": "OCCUPIED"}}
+    assert body == {"slots": {"CAM-001-1": "EMPTY", "CAM-001-2": "OCCUPIED"}, "epoch": None}
+
+
+def test_publish_raw_includes_given_epoch():
+    """Aşama 7 (PR b): epoch verilirse payload'a dahil edilmeli."""
+    client = FakeMqttClient()
+    publisher = MqttPublisher(make_settings(), camera_id="cam1", state_store=None, client=client)
+
+    publisher.publish_raw({1: "EMPTY"}, epoch=1732600000000)
+
+    import json
+    body = json.loads(client.published[0][1])
+    assert body == {"slots": {"CAM-001-1": "EMPTY"}, "epoch": 1732600000000}
+
+
+def test_publish_slot_changed_includes_given_epoch():
+    """Aşama 7 (PR b): epoch verilirse delta payload'ına dahil edilmeli."""
+    client = FakeMqttClient()
+    publisher = MqttPublisher(make_settings(), camera_id="cam1", state_store=None, client=client)
+
+    publisher.publish_slot_changed(1, "EMPTY", "OCCUPIED", 3, epoch=1732600000000)
+
+    import json
+    body = json.loads(client.published[0][1])
+    assert body["epoch"] == 1732600000000

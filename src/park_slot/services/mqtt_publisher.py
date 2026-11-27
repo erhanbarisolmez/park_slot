@@ -7,14 +7,20 @@ ADR-001'den itibaren İKİ ayrı kanal var:
        Topic:   selfpark/camera/{camera_code}/slotChanged
        Payload: {"slotId": "<camera_code>-<slot_id>", "previousStatus": str|null,
                  "currentStatus": "EMPTY"|"OCCUPIED"|"UNKNOWN", "version": int,
-                 "timestamp": epoch-millis}
+                 "epoch": int|null, "timestamp": epoch-millis}
 
 2. Snapshot (her (yeniden) MQTT bağlantısında, en güncel state ile -
    enable_startup_snapshot ile kaydedilen provider'dan okunur, publish_raw
    üzerinden gönderilir; ADR-008/periyodik (timer tabanlı) reconciliation
    hâlâ Aşama 4'e bırakıldı, bu sadece bağlantı olayına bağlı):
        Topic:   selfpark/camera/{camera_code}/detection
-       Payload: {"slots": {"<camera_code>-<slot_id>": "EMPTY"|"OCCUPIED"|"UNKNOWN", ...}}
+       Payload: {"slots": {"<camera_code>-<slot_id>": "EMPTY"|"OCCUPIED"|"UNKNOWN", ...},
+                 "epoch": int|null}
+
+Aşama 7 (PR b): her iki payload'a da "epoch" eklendi (process başına kalıcı,
+restart'tan bağımsız - bkz. services/outbox.py Outbox.load_or_generate_epoch).
+Geriye uyumluluk için opsiyonel (varsayılan None -> JSON'da null) - eski
+OutboxWorker/test çağrıları epoch vermeden de çalışır.
 
 Koordinat/layout bilgisi bu akışın parçası değildir; o, tools/register_slot_layout.py
 ile bir kez ayrı kaydedilir (bkz. o dosyanın docstring'i).
@@ -57,6 +63,7 @@ class MqttPublisher:
         self._last_payload: Optional[dict] = None
         self._client = None
         self._snapshot_provider: Optional[Callable[[], dict]] = None
+        self._snapshot_epoch: Optional[int] = None
 
         if not settings.enabled:
             logger.info("MQTT publisher devre dışı (mqtt.enabled=false).")
@@ -85,7 +92,7 @@ class MqttPublisher:
             logger.error("MQTT broker'a bağlanılamadı: %s", e)
             return None
 
-    def enable_startup_snapshot(self, provider: Callable[[], dict]) -> None:
+    def enable_startup_snapshot(self, provider: Callable[[], dict], epoch: Optional[int] = None) -> None:
         """Bağlantı kurulduğunda (ilk bağlantı veya herhangi bir sonraki
         yeniden bağlanma) en güncel tam state'i best-effort snapshot olarak
         gönder.
@@ -97,10 +104,17 @@ class MqttPublisher:
         on_connect'e bağlamak hem bu ilk-bağlantı yarışını giderir hem de
         broker restart/ağ kesintisi sonrası otomatik resync sağlar - periyodik
         bir timer DEĞİL, sadece bağlantı olayına tepki.
+
+        epoch: Aşama 7 (PR b) - process başına kalıcı epoch (Outbox.epoch),
+        bağlantı/reconnect snapshot'larına da taşınır. Bu olmadan (önceki bug),
+        saati bozuk bir pod'un reconnect anındaki snapshot'ı epoch=null
+        giderdi - tam da backend'in epoch-bazlı ileri-kaymış-saat korumasına
+        en çok ihtiyaç duyulan anda o koruma devre dışı kalırdı.
         """
         if self._client is None:
             return
         self._snapshot_provider = provider
+        self._snapshot_epoch = epoch
         self._client.on_connect = self._on_connect
         if self._client.is_connected():
             # connect_async bu çağrıdan önce tamamlanmış olabilir - bu
@@ -118,7 +132,7 @@ class MqttPublisher:
         full_state = self._snapshot_provider()
         if not full_state:
             return
-        sent = self.publish_raw(full_state)
+        sent = self.publish_raw(full_state, epoch=self._snapshot_epoch)
         logger.info(
             "Bağlantı snapshot'ı gönderildi: %d slot (ok=%s)", len(full_state), sent,
         )
@@ -142,7 +156,7 @@ class MqttPublisher:
         slot_statuses = {slot.id: slot.status.value.upper() for slot in parking_status.slots}
         return self.publish_raw(slot_statuses)
 
-    def publish_raw(self, slot_statuses: dict) -> bool:
+    def publish_raw(self, slot_statuses: dict, epoch: Optional[int] = None) -> bool:
         """slot_id -> status string haritasını yayınlar. OutboxWorker'ın tek
         giriş noktası - dönüş değeri (True=başarılı, False=başarısız/atlandı)
         outbox'ın bir kaydı 'gönderildi' işaretleyip işaretlemeyeceğini belirler.
@@ -152,6 +166,9 @@ class MqttPublisher:
         bu yüzden hem is_connected() hem dönen rc kontrol ediliyor; yalnızca
         exception'a bakmak outbox'ı gerçekte gitmemiş bir mesajı 'gönderildi'
         sanmaya iter ve tüm özelliğin amacını boşa çıkarır.
+
+        epoch: Aşama 7 (PR b), process başına kalıcı epoch - opsiyonel
+        (varsayılan None), eski çağrı yerleri/testler etkilenmez.
         """
         if self._client is None or not self._client.is_connected():
             return False
@@ -166,7 +183,7 @@ class MqttPublisher:
                 return True
 
         topic = f"selfpark/camera/{self._settings.camera_code}/detection"
-        body = json.dumps({"slots": payload_slots})
+        body = json.dumps({"slots": payload_slots, "epoch": epoch})
         try:
             info = self._client.publish(topic, body, qos=self._settings.qos)
             if info is not None and getattr(info, "rc", 0) != 0:
@@ -181,13 +198,21 @@ class MqttPublisher:
         return True
 
     def publish_slot_changed(
-        self, slot_id: int, prev_status: Optional[str], status: str, version: int
+        self,
+        slot_id: int,
+        prev_status: Optional[str],
+        status: str,
+        version: int,
+        epoch: Optional[int] = None,
     ) -> bool:
         """ADR-001 delta kanalı - OutboxWorker'ın tek giriş noktası (normal
         akışın tamamı buradan geçer). publish_raw (tam snapshot) ile aynı
         best-effort/ack kontrolü (is_connected + rc); dedup YOK - her outbox
         satırı zaten tekil bir değişikliği temsil ediyor, tekrar aynı payload
-        gelmez."""
+        gelmez.
+
+        epoch: Aşama 7 (PR b), process başına kalıcı epoch - opsiyonel
+        (varsayılan None), eski çağrı yerleri/testler etkilenmez."""
         if self._client is None or not self._client.is_connected():
             return False
 
@@ -197,6 +222,7 @@ class MqttPublisher:
             "previousStatus": prev_status,
             "currentStatus": status,
             "version": version,
+            "epoch": epoch,
             "timestamp": int(time.time() * 1000),
         })
         try:

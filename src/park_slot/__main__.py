@@ -163,7 +163,7 @@ def main():
         # Normal akışın tamamı artık delta kanalından (OutboxWorker aşağıda)
         # gidiyor; periyodik/timer tabanlı reconciliation (ADR-008) Aşama 4'e
         # bırakıldı.
-        mqtt_publisher.enable_startup_snapshot(outbox.read_full_state)
+        mqtt_publisher.enable_startup_snapshot(outbox.read_full_state, epoch=outbox.epoch)
 
         state_store.on_change(outbox.on_slot_change)
         outbox_worker = OutboxWorker(
@@ -172,6 +172,9 @@ def main():
             poll_interval=settings.outbox.poll_interval,
             retention_days=settings.outbox.retention_days,
             snapshot_interval=settings.outbox.snapshot_interval_seconds,
+            ntp_server=settings.outbox.ntp_server,
+            ntp_drift_threshold_seconds=settings.outbox.ntp_drift_threshold_seconds,
+            ntp_check_interval_seconds=settings.outbox.ntp_check_interval_seconds,
         )
         outbox_worker.start()
 

@@ -88,13 +88,18 @@ class OutboxConfig(BaseModel):
     ADR-004). db_path'teki {camera_code} yer tutucusu, her kameranın (ayrı OS
     process'i) kendi dosyasına yazması için __main__.py'de doldurulur - SQLite
     tek-writer modelinde iki process aynı dosyayı paylaşmamalı."""
-    db_path: str = "data/outbox_{camera_code}.db"
+    db_path: str = "data/outbox/outbox_{camera_code}.db"
     poll_interval: float = 5.0
     retention_days: int = 7
     # ADR-008 periyodik reconciliation (Aşama 4): kaç saniyede bir tam
     # snapshot gönderilir - delta kuyruğundan bağımsız, bağlantı hiç
     # kopmasa bile zamanla oluşabilecek drift'i düzeltir.
     snapshot_interval_seconds: float = 300.0
+    # Aşama 7 (PR b): NTP senkron kontrolü - saati eşiği aşan (veya sunucuya
+    # erişilemeyen) bir pod yayın yapmayı durdurur (bkz. services/ntp_check.py).
+    ntp_server: str = "pool.ntp.org"
+    ntp_drift_threshold_seconds: float = 5.0
+    ntp_check_interval_seconds: float = 300.0
 
 
 class WatchdogConfig(BaseModel):
