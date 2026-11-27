@@ -335,6 +335,16 @@ genişlemesi) için sert önkoşul.
   kayıtlar YALNIZCA beklenen tekrar/duplicate event'lerden (örn. outbox
   retry, at-least-once redelivery) oluşuyor — gerçek/yeni veri kaybı işareti
   yok. Bu iki koşul karşılanmadan flag `enforce`'a çevrilmez.
+  > **Revize (2026-11-27, PR b deploy sonrası kullanıcı kararı):** bu
+  > rollout için pencere **24 saat yerine 6 saat + manuel bir kamera
+  > restart testi** olarak kısaltıldı. Gerekçe: 3 kameralık filoda
+  > poll_interval=5s ile 6 saat kamera başına ~4300 örneklem veriyor
+  > (istatistiksel olarak yeterli), 24 saatin asıl koruduğu şey (gün/gece
+  > trafik farkı ve pod restart/reschedule gibi seyrek operasyonel
+  > olayların gözlemlenmesi) restart testinin elle tetiklenmesiyle ayrıca
+  > karşılanıyor. Genel kural (24 saat) gelecekteki rollout'lar için
+  > hâlâ varsayılan - bu sadece bu PR (b)→(c) geçişine özel, kayıtlı bir
+  > istisna.
 - `enforce` modunda: koşullu upsert fiilen reddedebilir (yukarıdaki
   `WHERE (epoch,seq) >` koşulu devrede).
 - **Geri dönüş:** flag'i `legacy`'ye çevirmek — kod rollback'i gerekmez.
