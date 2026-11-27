@@ -181,6 +181,10 @@
 
 ## Aşama 7 — Version/Sequence Bütünlüğü ve JSONB Lost-Update Düzeltmesi (GAP #12, #13)
 
+> **Durum (2026-11-27): Tamamlandı, merge edildi, prod'da doğrulandı**
+> (bkz. bu aşamanın sonundaki "Durum (2026-11-27)" kapanış notu). Aşağıdaki
+> v1→v4 geçmişi, planlama sürecinin kaydı olarak korunuyor.
+>
 > **Durum (2026-11-26): PLAN v4 — henüz uygulanmadı.** v1 (2026-11-25) →
 > v2: `epoch`'un `uuid4()` olması ile backend'in sadece `seq`'e bakan örnek
 > SQL'i arasındaki tutarsızlık düzeltildi (wall-clock epoch + tuple
@@ -540,6 +544,35 @@ geçiş kararı alındığında ayrı bir Aşama 8 olarak ele alınacak.
   `park_slot_state`'e taşınması + JSONB kolonunun ve dual-write kodunun
   FİİLEN KALDIRILMASI (bu PR'ın kapsamına dahil, ayrı bir takip işi değil).
 
+> **Durum (2026-11-27): Tamamlandı.** Üç PR'ın hepsi merge edildi ve
+> prod'da doğrulandı:
+> - **PR (a)** (`selfpark-backend` `main` `3706756`): `park_slot_state`
+>   şeması + koşullu upsert + kamera sahiplik kontrolü + metrikler + flag
+>   (`legacy` ile deploy edildi).
+> - **PR (b)** (`selfpark-backend` PR #5, merge `e0d77bc`; `park_slot`
+>   `main` `7afc7e8`): edge'de kalıcı `(epoch,seq)` + NTP senkron
+>   güvenlik ağı; manuel bir pod restart testiyle canlıda doğrulandı
+>   (epoch arttı, seq sıfırlanmadan devam etti).
+> - **PR (c)** (`selfpark-backend` PR #6, merge `0d198a2`): enforce-geçiş
+>   kriteri bu rollout için **24 saat yerine 6 saat + manuel restart
+>   testine** kısaltıldı (yukarıdaki revize notu) ve karşılandı; flag
+>   `enforce`'a çevrildi, okuma yolu `park_slot_state`'e taşındı,
+>   `park_slot_occupancy` tablosu fiilen `DROP` edildi (`V021`). Deploy
+>   öncesi 3 sorguluk bir canlı-DB karşılaştırması (JSONB vs
+>   `park_slot_state` aggregate) 0 fark buldu.
+>
+> **Ayrıca, deploy sonrası canlı gözlemle bulunan, bu üç PR'dan BAĞIMSIZ
+> bir takip bulgusu** (`MqttPublisher.publish_raw`'ın dedup kontrolü
+> `OutboxWorker.snapshot_once`'ın periyodik ADR-008 reconciliation
+> bacağını da sessizce bastırıyordu — CAM-002/CAM-003 164+ dakika hiç
+> gerçek snapshot göndermemişti) aynı gün (`park_slot` `main` `bd8ea9b`)
+> ayrı bir düzeltmeyle kapatıldı; detay: `ADR_DOCUMENTS.md` ADR-008
+> status update (2026-11-27).
+>
+> GAP #14/#15 (WS fan-out, MQTT manualAcks/clientId) kasıtlı olarak bu
+> planın dışında bırakıldı — yukarıdaki "Kapsam dışı — Aşama 8" notu
+> hâlâ geçerli, `replicas>1`'e geçiş kararı alındığında ele alınacak.
+
 ---
 
 ## Bağımlılık Özeti
@@ -550,9 +583,9 @@ Aşama 0 (hızlı fix) ──▶ Aşama 1 (SQLite outbox) ──▶ Aşama 2 (de
 
 Aşama 5 (temizlik) — herhangi bir zamanda, bağımsız
 
-Aşama 7 (version/sequence + JSONB lost-update, PLAN v4) — Aşama 2'nin event
-şemasına ek alan ekliyor, bağımsız yürütülebilir ama replicas>1/concurrency>1
-öncesi ZORUNLU önkoşul. İç PR sırası: PR (a0, AFTER_COMMIT) ──▶ PR (a, şema+upsert+sahiplik) ──▶ PR (b, edge) ──▶ PR (c, enforce+JSONB kaldırma).
+Aşama 7 (version/sequence + JSONB lost-update, Tamamlandı 2026-11-27) — Aşama 2'nin
+event şemasına ek alan ekliyor, bağımsız yürütülebilir ama replicas>1/concurrency>1
+öncesi ZORUNLU önkoşuldu (kapatıldı). İç PR sırası: PR (a0, AFTER_COMMIT) ──▶ PR (a, şema+upsert+sahiplik) ──▶ PR (b, edge) ──▶ PR (c, enforce+JSONB kaldırma) — hepsi merge edildi.
 ```
 
 Aşama 2 tamamlanmadan Aşama 4'teki snapshot event'i taşınacak bir topic/consumer bulamaz; Aşama 3, Aşama 2'nin event şemasına (slot kimliği taşıyan alanlar) bağımlı olduğu için ondan sonra önerilir ama kesin bir teknik zorunluluk değildir.

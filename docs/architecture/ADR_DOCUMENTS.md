@@ -45,6 +45,24 @@
 **Rejected Alternatives:** Seçenek 2 reddedildi — edge'de ROI index zaten kalıcı kimlik olarak davranıyor (CURRENT_STATE §8, id'lerin ardışık olmaması bunu kanıtlıyor), ayrı bir roiId eklemek kanıtlanmamış bir ihtiyaca karmaşıklık eklemek olurdu.
 
 > **Status update (2026-11-24 doğrulama turu):** Backend'de `24ab3ad` commit'i bu ADR'nin yönüne kısmi bir adım attı — `ParkSlotOccupancy`'ye `lastCameraId`/`lastCameraCode` eklendi, entity yorumunda slot key'i kavramsal olarak "bare slotIndex" diye yeniden tanımlandı. Ama asıl karar (Seçenek 3 — kalıcı `parkSlotId` + key'in kamera koduna bağımlılıktan ayrılması) **henüz uygulanmadı**: `ParkOccupancyManager.processDetection` hâlâ edge'den gelen ham, kamera-koduna-bağımlı string'i (`{cameraCode}-{slotId}`) doğrudan key olarak kullanıyor (stripping/normalizasyon yok), edge de hâlâ bu formatı gönderiyor. ADR hâlâ **kabul edilmiş ama uygulanmamış** durumda.
+>
+> **Status update (2026-11-27): Tamamen uygulandı ve kapatıldı — yukarıdaki
+> not artık geçersiz.** Seçenek 3, Aşama 3'te uygulandı: `camera_slot_identity`
+> tablosu (`(camera_id, raw_slot_key) → parkSlotId`) + `SlotIdentityResolver`
+> (auto-mint + manuel `explicitParkSlotId` carryover) + kalıcı `parkSlotId`
+> artık `park_slot_state`'in gerçek anahtarı (`ParkOccupancyManager.
+> processDetection/applySlotChange/upsertSlotLayout`, hepsi
+> `slotIdentityResolver.resolve(...)` üzerinden). Geriye kalan tek gerçek
+> açık: operatör bir kamera donanımı değişiminde `explicitParkSlotId`
+> carryover'ını KULLANMAZSA, eski kameraya ait satır sonsuza kadar orphan
+> kalıyordu (GAP #4'ün asıl kalan yarısı). Bu, aynı gün ayrı bir PR'da
+> (selfpark-backend PR #7, `2698ac0`) kapatıldı: günlük
+> `OrphanCameraSlotCleanupScheduler` (varsayılan 48h sessizlik eşiği) uzun
+> süre sessiz kalan ACTIVE kameraların orphan `camera_slot_identity`/
+> `park_slot_state` satırlarını temizliyor, kamerayı `INACTIVE` işaretliyor;
+> `ParkOccupancyManager.touchCameraLiveness` kamera yeniden rapor ederse
+> bunu self-healing olarak `ACTIVE`'e geri alıyor. **GAP #4 artık tam
+> anlamıyla kapalı.**
 
 ---
 
@@ -189,6 +207,28 @@ CREATE TABLE outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, slot_id INTEGER, stat
 > değişiklik gerekmedi — `ParkOccupancyManager.processDetection` zaten
 > gelen her slot için koşulsuz upsert yapıyordu (ADR-003 "edge kazanır"),
 > snapshot'ın sıklığı bu davranışı etkilemiyor.
+>
+> **Düzeltme (2026-11-27, canlı gözlemde bulundu):** Yukarıdaki not,
+> "(b) bacağı eklendi" derken periyodik tetiklemenin GERÇEKTEN MQTT'ye
+> ulaştığını zımnen varsaymıştı — bu yanlıştı. `MqttPublisher.publish_raw`'ın
+> `_last_payload` dedup kontrolü (bağlantı-olayı tetikli `_send_snapshot`
+> için eklenmiş, reconnect-storm'da flood önleme amaçlı, meşru bir
+> koruma) `OutboxWorker.snapshot_once`'ın periyodik çağrısına da
+> uygulanıyordu — sahne değişmediğinde periyodik snapshot HİÇBİR ZAMAN
+> gerçekten MQTT'ye gönderilmiyordu, sessizce "başarılı" dönüyordu. Aşama
+> 7 deploy sonrası canlı gözlemde bulundu: CAM-002/CAM-003, sahneleri
+> durağan olduğu için 164+ dakikadır hiç periyodik snapshot göndermemişti
+> (seq=0, `updated_at` donuk). Bu, ADR-008'in "backend bu snapshot'ı
+> koşulsuz yazar" kararını tam da en kritik senaryoda (reconciliation'ın
+> asıl gerekli olduğu an) etkisiz kılıyordu. **Düzeltme** (`park_slot`
+> `main` `bd8ea9b`): `publish_raw`'a `bypass_dedup` parametresi eklendi;
+> `_send_snapshot` (bağlantı-olayı, storm koruması gerçek bir ihtiyaç)
+> varsayılanla değişmedi, `snapshot_once` (sabit 5dk timer, storm riski
+> yok) artık `bypass_dedup=True` geçiriyor. Canlıda doğrulandı: `mosquitto_sub`
+> ile 6 dakika dinlemede 3 kameranın hepsi tam 300s arayla ikinci bir
+> snapshot gönderdi; CAM-003'ün iki snapshot'ı birebir aynı payload
+> olduğu halde ikisi de gerçekten MQTT'ye ulaştı (düzeltmeden önce ikincisi
+> sessizce atlanırdı).
 
 ---
 

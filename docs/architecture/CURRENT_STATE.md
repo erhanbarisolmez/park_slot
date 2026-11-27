@@ -121,6 +121,18 @@ Kamera doluluğuyla **bağlantısız**. Tek park-ilişkili sınıf `ParkingAnoma
 | Versiyon alanı var mı? | **Yok** — `config/slots/cam*.json` şemasında (`camera_id, source_url, image_width, image_height, slots, perspective_transform`) versiyon/zaman damgası alanı yok. | `config/slots/cam1.json` |
 
 > **Güncelleme (2026-11-24 doğrulama turu):** Backend'de `24ab3ad` commit'i (`feat(camera,kafka): kamera bazlı park doluluk özelliği`) `ParkSlotOccupancy`'yi `parkInfoId` bazlı tek satıra taşımış ve `lastCameraId`/`lastCameraCode` alanları eklemiş; entity yorumu artık slot map key'inin "bare slot index ('1'..'capacity')" olması **niyetini** belirtiyor (`ParkSlotOccupancy.java:45-51`). **Ancak** `ParkOccupancyManager.processDetection:68`teki `slotIndex = entry.getKey()` satırı, gelen MQTT payload'ındaki anahtarı hiçbir normalizasyon/prefix-stripping yapmadan doğrudan kullanıyor; edge tarafı (`mqtt_publisher.py:96`, `tools/register_slot_layout.py:53`) hâlâ `{camera_code}-{slot_id}` formatlı prefixli key gönderiyor. Yani **tasarım niyeti değişmiş, gerçek çalışma zamanı davranışı değişmemiş** — kamera kodu değişince eski key hâlâ orphan kalıyor (bkz. `ARCHITECTURE_GAP_ANALYSIS.md` madde 4, `ADR_DOCUMENTS.md` ADR-002 status update).
+>
+> **Güncelleme (2026-11-27): Bu bölüm artık tarihsel — o dönemki (Aşama 3
+> öncesi) gerçeği kaydediyor, güncel davranışı YANSITMIYOR.** `ParkSlotOccupancy`
+> ve ham `{cameraCode}-{slotId}` anahtarı tamamen kaldırıldı (Aşama 7, PR c —
+> `park_slot_occupancy` tablosu `DROP` edildi). Slot kimliği artık kalıcı
+> `parkSlotId` (`camera_slot_identity` + `SlotIdentityResolver`, Aşama 3,
+> ADR-002) — kamera değişince (operatör `explicitParkSlotId` carryover'ını
+> kullandığı sürece) kimlik korunur. Carryover kullanılmazsa oluşan orphan
+> satırlar artık günlük `OrphanCameraSlotCleanupScheduler` tarafından
+> otomatik temizleniyor (selfpark-backend PR #7, `2698ac0`). Detay:
+> `ADR_DOCUMENTS.md` ADR-002 status update (2026-11-27),
+> `ARCHITECTURE_GAP_ANALYSIS.md` madde 4.
 
 ## 9. Edge Local WebSocket (`api/ws.py`)
 
